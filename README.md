@@ -5,7 +5,7 @@
 <p align="center">Convert the Python + NumPy code to its symbolic mathematics </p>
 
 
-![CI](https://github.com/<you>/scikit-verify/actions/workflows/ci.yml/badge.svg)
+![CI](https://github.com/aadya940/scikit-verify/actions/workflows/ci.yml/badge.svg)
 
 <b> scikit-verify </b> recovers the symbolic mathematics implemented by Python and NumPy code.
 It executes a function with tracing values: the numerical computation runs
