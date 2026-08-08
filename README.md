@@ -2,7 +2,7 @@
   <img src="doc/logos/scikit-verify-lockup.svg" alt="scikit-verify" width="380">
 </p>
 
-<p align="center">Recover the symbolic mathematics implemented by Python + NumPy code.</p>
+<p align="center">Convert the Python + NumPy code to its symbolic mathematics </p>
 
 
 <b> scikit-verify </b> recovers the symbolic mathematics implemented by Python and NumPy code.
