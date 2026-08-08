@@ -16,17 +16,12 @@ the numerical execution itself.
 
 ```python
 import numpy as np
-import sympy
-from skverify import Pair, IDX
+from skverify import to_sympy
 
 def upwind(u, c, dt, dx):
     return u[1:] - (c * dt / dx) * (u[1:] - u[:-1])
 
-u = Pair.array("u", np.linspace(0, 1, 16))
-c, dt, dx = (Pair(v, sympy.Symbol(s, positive=True))
-             for v, s in [(0.9, "c"), (0.01, "dt"), (0.1, "dx")])
-
-out = upwind(u, c, dt, dx)
+out = to_sympy(upwind, np.linspace(0, 1, 16), 0.9, 0.01, 0.1)
 
 out.formula
 # u[i + 1] - c*dt*(u[i + 1] - u[i])/dx
@@ -36,9 +31,10 @@ out.domain
 # (0, 15)
 ```
 
-The function is not modified, parsed, or recompiled; it runs under CPython
-and dispatch is intercepted through the standard protocols
-(`__array_ufunc__`, `__array_function__`, operator overloading).
+Symbol names are taken from the function's own signature. The function is
+not modified, parsed, or recompiled; it runs under CPython and dispatch is
+intercepted through the standard protocols (`__array_ufunc__`,
+`__array_function__`, operator overloading).
 
 ## Supported
 
