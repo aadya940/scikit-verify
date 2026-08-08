@@ -4,7 +4,6 @@
 
 <p align="center">Recover the symbolic mathematics implemented by NumPy code.</p>
 
----
 
 scikit-verify recovers the symbolic mathematics implemented by NumPy code.
 It executes a function with tracing values: the numerical computation runs
