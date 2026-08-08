@@ -1,4 +1,10 @@
-# <img src="doc/logos/scikit-verify-lockup.svg" width="300" align="top">     scikit-verify
+<p align="center">
+  <img src="doc/logos/scikit-verify-lockup.svg" alt="scikit-verify" width="380">
+</p>
+
+<p align="center">Recover the symbolic mathematics implemented by NumPy code.</p>
+
+---
 
 scikit-verify recovers the symbolic mathematics implemented by NumPy code.
 It executes a function with tracing values: the numerical computation runs
