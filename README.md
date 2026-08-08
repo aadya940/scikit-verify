@@ -1,6 +1,6 @@
 # scikit-verify
 
-<img src="doc/logos/scikit-verify-lockup.svg" alt="scikit-verify" width="400" align="right">
+<img src="doc/logos/scikit-verify-lockup.svg" alt="scikit-verify" width="360" align="right">
 
 scikit-verify recovers the symbolic mathematics implemented by NumPy code.
 It executes a function with tracing values: the numerical computation runs
