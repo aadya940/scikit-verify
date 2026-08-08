@@ -5,7 +5,7 @@
 <p align="center">Recover the symbolic mathematics implemented by NumPy code.</p>
 
 
-<b> scikit-verify </b> recovers the symbolic mathematics implemented by NumPy code.
+<b> scikit-verify </b> recovers the symbolic mathematics implemented by Python and NumPy code.
 It executes a function with tracing values: the numerical computation runs
 normally, and each array operation additionally constructs the corresponding
 SymPy expression. The recovered expressions can then be checked, against a
