@@ -1,8 +1,11 @@
-# scikit-verify
+<p align="center">
+  <img src="doc/logos/scikit-verify-lockup.svg" alt="scikit-verify" width="380">
+</p>
 
-<img src="doc/logos/scikit-verify-lockup.svg" alt="scikit-verify" width="300" align="right">
+<p align="center">Recover the symbolic mathematics implemented by NumPy code.</p>
 
-scikit-verify recovers the symbolic mathematics implemented by NumPy code.
+
+<b> scikit-verify </b> recovers the symbolic mathematics implemented by NumPy code.
 It executes a function with tracing values: the numerical computation runs
 normally, and each array operation additionally constructs the corresponding
 SymPy expression. The recovered expressions can then be checked, against a
