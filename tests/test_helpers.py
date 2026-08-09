@@ -1,11 +1,14 @@
 """Test helpers, mostly index management and book-keeping."""
+
 import numpy as np
 import pytest
 import sympy
 from skverify.helpers import (
-    axis_idx, normalize_slice, _AXIS_SYMBOLS,
+    axis_idx,
+    normalize_slice,
+    _AXIS_SYMBOLS,
     normalize_key,
-    )
+)
 
 
 class TestAxisSymbols:
@@ -76,9 +79,10 @@ class TestNormalizeKey:
 
     def test_negative_slice_per_axis_lengths(self):
         # each axis resolves negatives against ITS OWN length
-        assert normalize_key(
-            (slice(None, -1), slice(-2, None)), (4, 7)
-        ) == ((0, 3), (5, 7))
+        assert normalize_key((slice(None, -1), slice(-2, None)), (4, 7)) == (
+            (0, 3),
+            (5, 7),
+        )
 
     def test_all_ints_full_drop(self):
         assert normalize_key((1, 2), (4, 7)) == (1, 2)

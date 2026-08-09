@@ -225,21 +225,10 @@ class Pair:
         return n
 
     def __getitem__(self, key):
-        """Handle slicing of unstrided arrays."""
+        """Slicing and integer indexing; 1-D is just the N=1 case."""
         if self._axis_bounds is None:
             raise TypeError("scalar Pair is not subscriptable")
-        if len(self._axis_bounds) > 1:
-            return self._getitem_nd(key)
-        if self.domain is None:
-            raise TypeError("scalar Pair is not subscriptable")
-        if not isinstance(key, slice):
-            raise NotImplementedError("only step-1 slices are supported for now.")
-        start, stop = normalize_slice(key, len(self))
-        return self._remap(
-            value=self.value[key],
-            index_map={IDX: IDX + start},
-            axis_bounds=((0, stop - start)),
-        )
+        return self._getitem_nd(key)
 
     def __array_ufunc__(self, ufunc, method, *inputs, out=None, **kwargs):
         if out is not None:

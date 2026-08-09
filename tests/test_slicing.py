@@ -85,10 +85,12 @@ class TestSliceRefusals:
         with pytest.raises(NotImplementedError):
             u[::-1]
 
-    def test_integer_index(self):
+    def test_integer_index_gives_scalar(self):
+        # gained when 1-D merged into the N-D path
         u = make()
-        with pytest.raises(NotImplementedError):
-            u[3]
+        assert u[3].formula == U[3]
+        assert u[3].domain is None
+        assert u[3].value == u.value[3]
 
 
 class TestEdgeShapes:
