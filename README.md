@@ -2,7 +2,7 @@
   <img src="doc/logos/scikit-verify-lockup.svg" alt="scikit-verify" width="380">
 </p>
 
-<p align="center">Convert the Python + NumPy code to its symbolic mathematics </p>
+<p align="center">Convert Python + NumPy code to its symbolic mathematics</p>
 
 
 ![CI](https://github.com/aadya940/scikit-verify/actions/workflows/ci.yml/badge.svg)
@@ -10,9 +10,8 @@
 <b> scikit-verify </b> recovers the symbolic mathematics implemented by Python and NumPy code.
 It executes a function with tracing values: the numerical computation runs
 normally, and each array operation additionally constructs the corresponding
-SymPy expression. The recovered expressions can then be checked, against a
-reference, against properties such as stability or conservation, or against
-the numerical execution itself.
+SymPy expression. The recovered expressions can then be checked against a reference, against
+the numerical execution itself, or handed to ordinary SymPy.
 
 ## Uses
 
@@ -68,19 +67,9 @@ trapezoid(y, dx=0.1).formula
 #   ^ the trapezoid rule's half-weight endpoints, visible at a glance
 ```
 
-A logistic sigmoid, the way it is written in practice:
-
-```python
-x = Pair.array("x", np.linspace(-1, 1, 6))
-(1.0 / (1.0 + np.exp(-x))).formula
-# 1.0/(1.0 + exp(-x[i]))
-```
-
 A 2-D stencil, with broadcasting and strides:
 
 ```python
-from skverify import Pair
-
 u = Pair.array("u", np.random.rand(4, 7))
 v = Pair.array("v", np.random.rand(7))
 
