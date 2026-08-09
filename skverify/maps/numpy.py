@@ -7,6 +7,7 @@ from ..registry import (
     UFUNC_TABLE,
     FUNCTION_TABLE,
 )
+from ..helpers import axis_idx
 
 from ..pair import Pair, IDX
 
@@ -56,15 +57,25 @@ def _sum(a, axis=None, **kwargs):
         raise NotImplementedError(f"np.sum kwargs {list(kwargs)} not supported")
     if not isinstance(a, Pair) or a.domain is None:
         return np.sum(a)  # plain input, not ours
-    if axis not in (None, 0):
-        raise NotImplementedError("axis reduction beyond 1-D arrives with N-D")
-    lo, hi = a.domain
-    j = sympy.Symbol("j", integer=True)
-    return Pair(
-        np.sum(a.value),
-        sympy.Sum(a.formula.subs(IDX, j), (j, lo, hi - 1)),  # Sum bounds INCLUSIVE
-        None,  # 1-D reduced fully, scalar
+
+    bounds = a._axis_bounds
+    if axis is not None and not (axis == 0 and len(bounds) == 1):
+        raise NotImplementedError("per-axis reduction not supported yet")
+
+    # one Sum per axis, innermost axis innermost:
+    # 1-D: Sum(p[j], (j, 0, n-1))                      (unchanged output)
+    # 2-D: Sum(Sum(p[j0, j1], (j1, 0, m-1)), (j0, 0, n-1))
+    if len(bounds) == 1:
+        dummies = [sympy.Symbol("j", integer=True)]  # keep the historical `j`
+    else:
+        dummies = [sympy.Symbol(f"j{ax}", integer=True) for ax in range(len(bounds))]
+    formula = a.formula.subs(
+        {axis_idx(ax): d for ax, d in enumerate(dummies)}, simultaneous=True
     )
+    for ax in reversed(range(len(bounds))):
+        lo, hi = bounds[ax]
+        formula = sympy.Sum(formula, (dummies[ax], lo, hi - 1))  # inclusive
+    return Pair(np.sum(a.value), formula, None)
 
 
 def _zeros(shape, **kw):

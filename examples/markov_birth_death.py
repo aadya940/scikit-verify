@@ -4,6 +4,7 @@ Interior update:  p'[i] = b * p[i-1] + (1 - b - d) * p[i] + d * p[i+1]
 This IS the transition-matrix product, the tridiagonal structure
 written as slices.
 """
+
 import numpy as np
 from skverify import to_sympy
 
@@ -28,7 +29,7 @@ def total_mass(p):
 if __name__ == "__main__":
     rng = np.random.default_rng(1)
     p0 = rng.uniform(0, 1, 64)
-    p0 = p0 / p0.sum()                       # a probability distribution
+    p0 = p0 / p0.sum()  # a probability distribution
 
     out = to_sympy(birth_death_step, p0, 0.3, 0.2)
     print("update rule:", out.formula)
