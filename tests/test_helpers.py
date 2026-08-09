@@ -101,7 +101,7 @@ class TestNormalizeKey:
             normalize_key(-6, (5,))
 
     def test_bool_refused_before_int(self):
-        # isinstance(True, int) is True — bool must be caught first
+        # isinstance(True, int) is True, bool must be caught first
         with pytest.raises(NotImplementedError):
             normalize_key(True, (5,))
         with pytest.raises(NotImplementedError):

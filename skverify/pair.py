@@ -9,6 +9,7 @@ from .helpers import (
     axis_idx,
     normalize_slice,
     _AXIS_SYMBOLS,
+    normalize_key,
 )
 
 IDX = axis_idx(0)  # `i`
@@ -113,6 +114,26 @@ class Pair:
         formula = self.formula.subs(index_map, simultaneous=True)
         return Pair(value, formula, domain=axis_bounds or None)
 
+    def _getitem_nd(self, key):
+        # u[1:, 2] on a 4x7 array -> entries ((1, 4), 2)
+        entries = normalize_key(key, tuple(hi - lo for lo, hi in self._axis_bounds))
+        index_map, new_bounds = {}, []
+        for ax, entry in enumerate(entries):
+            sym = axis_idx(ax)
+            if isinstance(entry, tuple):
+                # u[1:] : u[i] -> u[i + 1], 4 rows -> 3 rows
+                start, stop = entry
+                index_map[sym] = sym + start
+                new_bounds.append((0, stop - start))
+            else:
+                # u[2] : u[i, j] -> u[2, j], row axis gone, `j` survives as-is
+                index_map[sym] = sympy.Integer(entry)
+        return self._remap(
+            value=self.value[key],  # raw key: numpy interprets it independently
+            index_map=index_map,
+            axis_bounds=tuple(new_bounds),  # u[2, 3] -> (), remap makes it scalar
+        )
+
     def __add__(self, other):
         return Pair(
             value=self.value + Pair._value_of(other),
@@ -205,6 +226,10 @@ class Pair:
 
     def __getitem__(self, key):
         """Handle slicing of unstrided arrays."""
+        if self._axis_bounds is None:
+            raise TypeError("scalar Pair is not subscriptable")
+        if len(self._axis_bounds) > 1:
+            return self._getitem_nd(key)
         if self.domain is None:
             raise TypeError("scalar Pair is not subscriptable")
         if not isinstance(key, slice):
