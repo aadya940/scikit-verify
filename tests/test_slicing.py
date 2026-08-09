@@ -75,15 +75,18 @@ class TestAlignment:
 
 
 class TestSliceRefusals:
-    def test_step_slice_refused(self):
+    def test_step_slice_lifts(self):
+        # gained with stride support: n=12, every other point
         u = make()
-        with pytest.raises(NotImplementedError):
-            u[::2]
+        assert u[::2].formula == U[2 * IDX]
+        assert u[::2].domain == (0, 6)
+        assert np.allclose(u[::2].value, u.value[::2])
 
-    def test_reverse_refused(self):
+    def test_reverse_lifts(self):
         u = make()
-        with pytest.raises(NotImplementedError):
-            u[::-1]
+        assert u[::-1].formula == U[11 - IDX]
+        assert u[::-1].domain == (0, 12)
+        assert np.allclose(u[::-1].value, u.value[::-1])
 
     def test_integer_index_gives_scalar(self):
         # gained when 1-D merged into the N-D path

@@ -14,6 +14,23 @@ SymPy expression. The recovered expressions can then be checked, against a
 reference, against properties such as stability or conservation, or against
 the numerical execution itself.
 
+## Uses
+
+- **Check code against the paper.** Recover the equation your code
+  implements and compare it, term by term, with the one you published.
+- **Catch silent math bugs.** Wrong-but-plausible numerics run fine and
+  pass tests; the recovered formula makes the error visible.
+- **Review generated code.** LLM-written numerical kernels look right
+  more often than they are right; lift them and read the mathematics.
+- **Understand inherited code.** See what a kernel actually computes
+  without reverse-engineering it by hand.
+- **Use SymPy on your code.** The recovered formula is an ordinary
+  SymPy expression: differentiate it, simplify it, render it as LaTeX,
+  substitute values.
+- **Feed SciML frameworks.** Tools like NVIDIA PhysicsNeMo take SymPy
+  equations as input; recover them from your existing NumPy code
+  instead of retyping them.
+
 ## Example
 
 ```python
@@ -38,12 +55,31 @@ not modified, parsed, or recompiled; it runs under CPython and dispatch is
 intercepted through the standard protocols (`__array_ufunc__`,
 `__array_function__`, operator overloading).
 
+A 2-D stencil, with broadcasting and strides:
+
+```python
+from skverify import Pair
+
+u = Pair.array("u", np.random.rand(4, 7))
+v = Pair.array("v", np.random.rand(7))
+
+(u[1:, :] - u[:-1, :]).formula   # u[i + 1, j] - u[i, j]
+(u + v).formula                  # u[i, j] + v[j]      (v aligns to the last axis)
+u[::2, ::-1].formula             # u[2*i, 6 - j]
+u[2].formula                     # u[2, j]
+u[2, 3].formula                  # u[2, 3]             (a scalar; domain is None)
+```
+
 ## Supported
 
-Current support covers 1-D vectorized NumPy code:
+Current support covers N-dimensional vectorized NumPy code (up to 5-D):
 
-- arithmetic operators and step-1 slicing, with index-domain tracking and
-  slice-alignment checking
+- arithmetic operators, with per-axis index-domain tracking and
+  alignment checking
+- slicing with any start/stop/step (including flips and strides),
+  integer indexing, `...`, and their composition
+- rank broadcasting (a lower-rank operand aligns to the trailing axes;
+  extent-1 stretching is not yet supported)
 - elementwise ufuncs (`np.sin`, `np.exp`, `np.maximum`, ...)
 - `np.where` (lifted to `Piecewise`), `np.sum` (lifted to `Sum`),
   `np.zeros_like` / `np.ones_like` / `np.full_like`
@@ -53,9 +89,9 @@ Unsupported operations raise `NotImplementedError`. Formulas are only
 produced for operations whose semantics are implemented; there is no
 best-effort fallback.
 
-Planned, in order: test suite, N-dimensional arrays, in-place assignment,
-comparison and branch capture, and contract-based handling of compiled
-routines (`scipy.linalg`, `scipy.sparse`).
+Planned, in order: reductions over a chosen axis and transposition,
+in-place assignment, comparison and branch capture, and contract-based
+handling of compiled routines (`scipy.linalg`, `scipy.sparse`).
 
 ## Installation
 

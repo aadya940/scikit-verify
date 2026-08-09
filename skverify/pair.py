@@ -139,10 +139,10 @@ class Pair:
                     f"index map {old_sym} -> {expr} is not an index expression"
                 )
             if not expr.is_integer and not all(
-                expr.diff(s) in (0, 1, -1) for s in expr.free_symbols
+                expr.diff(s).is_Integer for s in expr.free_symbols
             ):
                 raise NotImplementedError(
-                    f"index map {old_sym} -> {expr} is not affine (step-1)"
+                    f"index map {old_sym} -> {expr} is not affine"
                 )
         formula = self.formula.subs(index_map, simultaneous=True)
         return Pair(value, formula, domain=axis_bounds or None)
@@ -154,10 +154,13 @@ class Pair:
         for ax, entry in enumerate(entries):
             sym = axis_idx(ax)
             if isinstance(entry, tuple):
-                # u[1:] : u[i] -> u[i + 1], 4 rows -> 3 rows
-                start, stop = entry
-                index_map[sym] = sym + start
-                new_bounds.append((0, stop - start))
+                # u[1:]   : u[i] -> u[i + 1]      4 rows -> 3 rows
+                # u[::2]  : u[i] -> u[2*i]        5 -> 3
+                # u[::-1] : u[i] -> u[4 - i]      5 -> 5
+                start, stop, step = entry
+                index_map[sym] = step * sym + start
+                count = max(0, -(-(stop - start) // step))  # ceil for +/- step
+                new_bounds.append((0, count))
             else:
                 # u[2] : u[i, j] -> u[2, j], row axis gone, `j` survives as-is
                 index_map[sym] = sympy.Integer(entry)

@@ -16,22 +16,19 @@ def axis_idx(ax):
 
 
 def normalize_slice(key, length):
-    """Resolve a step-1 slice to concrete (start, stop) in [0, length]."""
-    if key.step not in (None, 1):
-        raise NotImplementedError("only step-1 slices are supported")
-    start = key.start or 0
-    stop = length if key.stop is None else key.stop
-    if start < 0:
-        start += length
-    if stop < 0:
-        stop += length
-    return start, stop
+    """Resolve a slice to concrete (start, stop, step).
+
+    slice(1, None).indices(5)      -> (1, 5, 1)
+    slice(None, None, -1).indices(5) -> (4, -1, -1)   # walks 4, 3, 2, 1, 0
+    Negatives and out-of-range stops are clamped by Python itself.
+    """
+    return key.indices(length)
 
 
 def normalize_key(key, lengths):
     """Canonicalize an nd-getitem key: one entry per axis.
 
-    Returns (start, stop) for slice axes, a non-negative int for
+    Returns (start, stop, step) for slice axes, a non-negative int for
     dropped axes. Handles, for example:
         1. Negative indices -> positive.
         2. `...` Ellipsis -> explicit full slices.

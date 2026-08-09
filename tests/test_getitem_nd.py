@@ -88,9 +88,12 @@ class TestArithmetic:
 
 
 class TestRefusals:
-    def test_step_slice(self, u):
-        with pytest.raises(NotImplementedError):
-            u[::2, :]
+    def test_step_slice_lifts(self, u):
+        # gained with stride support: rows 0 and 2 of the 4x7 array
+        r = u[::2, :]
+        assert r.formula == U[2 * I, J]
+        assert r.domain == ((0, 2), (0, 7))
+        assert np.allclose(r.value, u.value[::2, :])
 
     def test_newaxis(self, u):
         with pytest.raises(NotImplementedError):

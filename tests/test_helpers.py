@@ -28,47 +28,46 @@ class TestAxisSymbols:
 
 class TestNormalizeSlice:
     def test_defaults(self):
-        assert normalize_slice(slice(None, None), 10) == (0, 10)
+        assert normalize_slice(slice(None, None), 10) == (0, 10, 1)
 
     def test_negatives(self):
-        assert normalize_slice(slice(1, -1), 10) == (1, 9)
-        assert normalize_slice(slice(-4, None), 10) == (6, 10)
+        assert normalize_slice(slice(1, -1), 10) == (1, 9, 1)
+        assert normalize_slice(slice(-4, None), 10) == (6, 10, 1)
 
     def test_explicit(self):
-        assert normalize_slice(slice(2, 7), 10) == (2, 7)
+        assert normalize_slice(slice(2, 7), 10) == (2, 7, 1)
 
-    def test_step_refused(self):
-        with pytest.raises(NotImplementedError):
-            normalize_slice(slice(None, None, 2), 10)
-        with pytest.raises(NotImplementedError):
-            normalize_slice(slice(None, None, -1), 10)
+    def test_steps(self):
+        assert normalize_slice(slice(None, None, 2), 10) == (0, 10, 2)
+        # flip walks 9, 8, ..., 0: stop is -1, one past the last
+        assert normalize_slice(slice(None, None, -1), 10) == (9, -1, -1)
 
 
 class TestNormalizeKey:
     def test_single_slice_1d(self):
-        assert normalize_key(slice(1, None), (5,)) == ((1, 5),)
+        assert normalize_key(slice(1, None), (5,)) == ((1, 5, 1),)
 
     def test_int_and_slice_2d(self):
-        assert normalize_key((1, slice(None)), (4, 7)) == (1, (0, 7))
+        assert normalize_key((1, slice(None)), (4, 7)) == (1, (0, 7, 1))
 
     def test_short_key_padded(self):
         # u[1:] on 2-D means u[1:, :]
-        assert normalize_key(slice(1, None), (4, 7)) == ((1, 4), (0, 7))
+        assert normalize_key(slice(1, None), (4, 7)) == ((1, 4, 1), (0, 7, 1))
 
     def test_bare_int_padded(self):
-        assert normalize_key(2, (4, 7)) == (2, (0, 7))
+        assert normalize_key(2, (4, 7)) == (2, (0, 7, 1))
 
     def test_ellipsis_leading(self):
-        assert normalize_key((Ellipsis, 0), (2, 3, 4)) == ((0, 2), (0, 3), 0)
+        assert normalize_key((Ellipsis, 0), (2, 3, 4)) == ((0, 2, 1), (0, 3, 1), 0)
 
     def test_ellipsis_middle(self):
-        assert normalize_key((0, Ellipsis, 1), (2, 3, 4)) == (0, (0, 3), 1)
+        assert normalize_key((0, Ellipsis, 1), (2, 3, 4)) == (0, (0, 3, 1), 1)
 
     def test_ellipsis_trailing(self):
-        assert normalize_key((0, Ellipsis), (2, 3, 4)) == (0, (0, 3), (0, 4))
+        assert normalize_key((0, Ellipsis), (2, 3, 4)) == (0, (0, 3, 1), (0, 4, 1))
 
     def test_ellipsis_alone(self):
-        assert normalize_key(Ellipsis, (2, 3)) == ((0, 2), (0, 3))
+        assert normalize_key(Ellipsis, (2, 3)) == ((0, 2, 1), (0, 3, 1))
 
     def test_redundant_ellipsis(self):
         # key already covers every axis; `...` expands to nothing
@@ -80,8 +79,8 @@ class TestNormalizeKey:
     def test_negative_slice_per_axis_lengths(self):
         # each axis resolves negatives against ITS OWN length
         assert normalize_key((slice(None, -1), slice(-2, None)), (4, 7)) == (
-            (0, 3),
-            (5, 7),
+            (0, 3, 1),
+            (5, 7, 1),
         )
 
     def test_all_ints_full_drop(self):
@@ -121,6 +120,6 @@ class TestNormalizeKey:
         with pytest.raises(NotImplementedError):
             normalize_key(np.array([0, 1]), (5,))
 
-    def test_step_slice_refused(self):
-        with pytest.raises(NotImplementedError):
-            normalize_key(slice(None, None, 2), (5,))
+    def test_step_slice_passes_through(self):
+        # gained with stride support
+        assert normalize_key(slice(None, None, 2), (5,)) == ((0, 5, 2),)
