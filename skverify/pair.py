@@ -215,6 +215,37 @@ class Pair:
             "data-dependent branch on a traced value"  # guard-logging comes later
         )
 
+    # bare-number conversions discard the formula: the value keeps computing
+    # but the trace silently dies. Use .value for a deliberate exit.
+    def __float__(self):
+        raise NotImplementedError(
+            "float() on a traced value discards the formula; use .value"
+        )
+
+    def __int__(self):
+        raise NotImplementedError(
+            "int() on a traced value discards the formula; use .value"
+        )
+
+    def __complex__(self):
+        raise NotImplementedError(
+            "complex() on a traced value discards the formula; use .value"
+        )
+
+    # facts about the concrete lane; some library bodies read these
+    # before doing any math
+    @property
+    def ndim(self):
+        return np.ndim(self.value)
+
+    @property
+    def shape(self):
+        return np.shape(self.value)
+
+    @property
+    def dtype(self):
+        return np.asarray(self.value).dtype
+
     def __truediv__(self, other):  # self / other
         mine, theirs, merged = Pair._broadcast(self, other)
         return Pair(
@@ -311,8 +342,13 @@ class Pair:
 
     def __array_function__(self, func, types, args, kwargs):
         fn = FUNCTION_TABLE.get(func)
-        if fn is None:
-            raise NotImplementedError(
-                "The function is not mapped in `skverify`.",
-            )
-        return fn(*args, **kwargs)
+        if fn is not None:
+            return fn(*args, **kwargs)  # curated: indexed formulas
+        inner = getattr(func, "__wrapped__", None)
+        if inner is not None:
+            # pure-Python numpy: run its real body on the Pairs; slices and
+            # arithmetic inside dispatch back here, formulas unrolled per element
+            return inner(*args, **kwargs)
+        raise NotImplementedError(
+            f"np.{func.__name__} is compiled; needs a contract",
+        )

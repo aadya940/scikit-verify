@@ -58,6 +58,8 @@ class TestConstantFields:
         with pytest.raises(NotImplementedError):
             np.array([1.0, 2.0, 3.0]) + make(3)
 
-    def test_unmapped_function(self):
-        with pytest.raises(NotImplementedError):
+    def test_unmapped_function_is_loud(self):
+        # unmapped + pure-Python: numpy's body runs on Pairs and dies
+        # LOUDLY at the first unsupported op (Pair < Pair), never silently
+        with pytest.raises((NotImplementedError, TypeError)):
             np.median(make())
