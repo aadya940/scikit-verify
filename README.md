@@ -55,6 +55,27 @@ not modified, parsed, or recompiled; it runs under CPython and dispatch is
 intercepted through the standard protocols (`__array_ufunc__`,
 `__array_function__`, operator overloading).
 
+This works on real library code, unmodified. `scipy.integrate.trapezoid`,
+called on a traced array, reveals itself:
+
+```python
+from scipy.integrate import trapezoid
+from skverify import Pair
+
+y = Pair.array("y", np.linspace(0, 1, 8) ** 2)
+trapezoid(y, dx=0.1).formula
+# 0.05*y[0] + 0.1*y[1] + 0.1*y[2] + ... + 0.1*y[6] + 0.05*y[7]
+#   ^ the trapezoid rule's half-weight endpoints, visible at a glance
+```
+
+A logistic sigmoid, the way it is written in practice:
+
+```python
+x = Pair.array("x", np.linspace(-1, 1, 6))
+(1.0 / (1.0 + np.exp(-x))).formula
+# 1.0/(1.0 + exp(-x[i]))
+```
+
 A 2-D stencil, with broadcasting and strides:
 
 ```python
