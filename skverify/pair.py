@@ -70,10 +70,13 @@ class Pair:
                 result = d
                 continue
             if len(d) != len(result):
-                raise ValueError(
-                    f"rank mismatch: {len(result)}D vs {len(d)}D "
-                    "(broadcast not yet supported).",
-                )
+                # (4, 7) meeting (7,): line the short one up against the
+                # END of the long one and check those axes agree
+                short, long = sorted((d, result), key=len)
+                if short != long[len(long) - len(short) :]:
+                    raise ValueError(f"cannot broadcast {short} with {long}")
+                result = long
+                continue
             for ax, (result_item, d_item) in enumerate(zip(result, d)):
                 if d_item != result_item:
                     raise ValueError(
@@ -89,6 +92,36 @@ class Pair:
     @staticmethod
     def _value_of(x):
         return x.value if isinstance(x, Pair) else x
+
+    @staticmethod
+    def _shift_axes(formula, bounds, ndim):
+        """Rename a lower-rank operand's letters to the trailing axes.
+
+        v[i] (1 axis) meeting a 2-axis result: v runs along the last
+        axis, so v[i] -> v[j].
+        """
+        if bounds is None:
+            return formula  # scalar: no letters to move
+        offset = ndim - len(bounds)
+        if offset == 0:
+            return formula
+        index_map = {axis_idx(a): axis_idx(a + offset) for a in range(len(bounds))}
+        return formula.subs(index_map, simultaneous=True)
+
+    @staticmethod
+    def _broadcast(a, b):
+        """Formulas + merged bounds for a binary op.
+
+        u (4x7) + v (7):  u[i, j] + v[j],  bounds ((0, 4), (0, 7))
+        """
+        bounds_a, bounds_b = Pair._domain_of(a), Pair._domain_of(b)
+        merged = Pair._merge_domains(bounds_a, bounds_b)
+        formula_a = Pair._formula_of(a)
+        formula_b = Pair._formula_of(b)
+        if merged is not None:
+            formula_a = Pair._shift_axes(formula_a, bounds_a, len(merged))
+            formula_b = Pair._shift_axes(formula_b, bounds_b, len(merged))
+        return formula_a, formula_b, merged
 
     def _remap(self, value, index_map, axis_bounds):
         """Implements infrastructure for array methods where
@@ -135,35 +168,38 @@ class Pair:
         )
 
     def __add__(self, other):
+        mine, theirs, merged = Pair._broadcast(self, other)
         return Pair(
             value=self.value + Pair._value_of(other),
-            formula=self.formula
-            + Pair._formula_of(other),  # sympy dunder does the rest
-            domain=Pair._merge_domains(self._axis_bounds, Pair._domain_of(other)),
+            formula=mine + theirs,  # sympy dunder does the rest
+            domain=merged,
         )
 
     def __radd__(self, other):  # handles  2 + u
         return self.__add__(other)
 
     def __sub__(self, other):
+        mine, theirs, merged = Pair._broadcast(self, other)
         return Pair(
             value=self.value - Pair._value_of(other),
-            formula=self.formula - Pair._formula_of(other),
-            domain=Pair._merge_domains(self._axis_bounds, Pair._domain_of(other)),
+            formula=mine - theirs,
+            domain=merged,
         )
 
     def __rsub__(self, other):  # handles  2 - u   (order matters!)
+        mine, theirs, merged = Pair._broadcast(self, other)
         return Pair(
             value=Pair._value_of(other) - self.value,
-            formula=Pair._formula_of(other) - self.formula,
-            domain=Pair._merge_domains(self._axis_bounds, Pair._domain_of(other)),
+            formula=theirs - mine,
+            domain=merged,
         )
 
     def __mul__(self, other):
+        mine, theirs, merged = Pair._broadcast(self, other)
         return Pair(
             value=self.value * Pair._value_of(other),
-            formula=self.formula * Pair._formula_of(other),
-            domain=Pair._merge_domains(self._axis_bounds, Pair._domain_of(other)),
+            formula=mine * theirs,
+            domain=merged,
         )
 
     __rmul__ = __mul__
@@ -176,32 +212,36 @@ class Pair:
             "data-dependent branch on a traced value"  # guard-logging comes later
         )
 
-    def __truediv__(self, other):  # self / other  (if not added yet)
+    def __truediv__(self, other):  # self / other
+        mine, theirs, merged = Pair._broadcast(self, other)
         return Pair(
             value=self.value / Pair._value_of(other),
-            formula=self.formula / Pair._formula_of(other),
-            domain=Pair._merge_domains(self._axis_bounds, Pair._domain_of(other)),
+            formula=mine / theirs,
+            domain=merged,
         )
 
     def __rtruediv__(self, other):  # other / self
+        mine, theirs, merged = Pair._broadcast(self, other)
         return Pair(
             value=Pair._value_of(other) / self.value,
-            formula=Pair._formula_of(other) / self.formula,
-            domain=Pair._merge_domains(self._axis_bounds, Pair._domain_of(other)),
+            formula=theirs / mine,
+            domain=merged,
         )
 
     def __pow__(self, other):  # self ** other
+        mine, theirs, merged = Pair._broadcast(self, other)
         return Pair(
             value=self.value ** Pair._value_of(other),
-            formula=self.formula ** Pair._formula_of(other),
-            domain=Pair._merge_domains(self._axis_bounds, Pair._domain_of(other)),
+            formula=mine**theirs,
+            domain=merged,
         )
 
     def __rpow__(self, other):  # other ** self
+        mine, theirs, merged = Pair._broadcast(self, other)
         return Pair(
             value=Pair._value_of(other) ** self.value,
-            formula=Pair._formula_of(other) ** self.formula,
-            domain=Pair._merge_domains(self._axis_bounds, Pair._domain_of(other)),
+            formula=theirs**mine,
+            domain=merged,
         )
 
     def __neg__(self):  # -self
@@ -233,10 +273,6 @@ class Pair:
     def __array_ufunc__(self, ufunc, method, *inputs, out=None, **kwargs):
         if out is not None:
             raise NotImplementedError("out= is not supported (mutation)")
-        for input in inputs:
-            if isinstance(input, np.ndarray):
-                if input.ndim > 1:
-                    raise NotImplementedError("")
         if method != "__call__" or kwargs.get("out") is not None:
             raise NotImplementedError(f"{ufunc.__name__}.{method} not supported")
 
@@ -258,8 +294,15 @@ class Pair:
             raise NotImplementedError(f"ufunc {ufunc.__name__} not mapped")
 
         values = [Pair._value_of(x) for x in inputs]
-        formulas = [Pair._formula_of(x) for x in inputs]
         domain = Pair._merge_domains(*(Pair._domain_of(x) for x in inputs))
+        formulas = [
+            Pair._shift_axes(
+                Pair._formula_of(x),
+                Pair._domain_of(x),
+                0 if domain is None else len(domain),
+            )
+            for x in inputs
+        ]
 
         return Pair(ufunc(*values), target(*formulas), domain)
 
