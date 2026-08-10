@@ -53,14 +53,15 @@ class TestSlices:
 
 
 class TestIntDrops:
-    def test_int_keeps_original_symbols(self, u):
+    def test_int_renames_survivor(self, u):
+        # the letter invariant: letter k always means result-axis k
         r = u[2]
-        assert r.formula == U[2, J]  # survivor stays `j`, NOT renumbered to `i`
+        assert r.formula == U[2, I]  # survivor takes axis-0's letter
         assert r.domain == (0, 7)
         assert np.allclose(r.value, u.value[2])
 
     def test_negative_int(self, u):
-        assert u[-1].formula == U[3, J]
+        assert u[-1].formula == U[3, I]
 
     def test_all_ints_scalar(self, u):
         r = u[2, 3]
@@ -70,9 +71,17 @@ class TestIntDrops:
 
     def test_mixed_3d(self, w):
         r = w[1, 1:, 2]
-        assert r.formula == W[1, J + 1, 2]
+        assert r.formula == W[1, I + 1, 2]  # sole survivor renamed to i
         assert r.domain == (0, 2)
         assert np.allclose(r.value, w.value[1, 1:, 2])
+
+    def test_dropped_row_adds_to_vector(self, u):
+        # the bug the invariant fixes: u[2] + v must share ONE letter
+        v = Pair.array("v", np.arange(7.0))
+        V = sympy.IndexedBase("v")
+        r = u[2] + v
+        assert sympy.simplify(r.formula - (U[2, I] + V[I])) == 0
+        assert np.allclose(r.value, u.value[2] + v.value)
 
 
 class TestArithmetic:

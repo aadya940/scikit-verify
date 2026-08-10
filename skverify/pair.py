@@ -157,12 +157,15 @@ class Pair:
                 # u[1:]   : u[i] -> u[i + 1]      4 rows -> 3 rows
                 # u[::2]  : u[i] -> u[2*i]        5 -> 3
                 # u[::-1] : u[i] -> u[4 - i]      5 -> 5
+                # Survivors take the letter of their RESULT position, so that
+                # letter k always means axis k:  u[2, 1:] -> u[2, i + 1], not j
                 start, stop, step = entry
-                index_map[sym] = step * sym + start
+                new_sym = axis_idx(len(new_bounds))
+                index_map[sym] = step * new_sym + start
                 count = max(0, -(-(stop - start) // step))  # ceil for +/- step
                 new_bounds.append((0, count))
             else:
-                # u[2] : u[i, j] -> u[2, j], row axis gone, `j` survives as-is
+                # u[2] : u[i, j] -> u[2, i], row axis gone, survivor renamed
                 index_map[sym] = sympy.Integer(entry)
         return self._remap(
             value=self.value[key],  # raw key: numpy interprets it independently
