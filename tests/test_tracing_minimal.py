@@ -82,6 +82,30 @@ class TestWrappedFallback:
         assert r.formula == U[0] ** 2 + U[1] ** 2 + U[2] ** 2 + U[3] ** 2
         assert r.value == np.dot(u.value, u.value)
 
+    def test_to_sympy_repacks_unrolled_results(self):
+        # fallback path returns ndarray-of-Pairs; to_sympy repacks into
+        # one Pair: sympy.Array formula, real ndarray value, domain
+        from skverify import to_sympy
+
+        x = np.linspace(0.0, 9.0, 10)
+        s = to_sympy(lambda x: np.diff(x, 2), x)
+        assert isinstance(s, Pair)
+        assert isinstance(s.formula, sympy.Array)
+        X = sympy.IndexedBase("x")
+        assert s.formula[0] == X[0] - 2 * X[1] + X[2]
+        assert s.domain == (0, 8)
+        assert np.allclose(s.value, np.diff(x, 2))
+
+    def test_to_sympy_passes_config_ints_through(self):
+        # ints are config (n=, axis=), not math: no wrapping, no lambda needed
+        from skverify import to_sympy
+
+        x = np.linspace(0.0, 9.0, 10)
+        s = to_sympy(np.diff, x, 2)
+        A = sympy.IndexedBase("a")  # named from np.diff's own signature
+        assert s.formula[0] == A[0] - 2 * A[1] + A[2]
+        assert np.allclose(s.value, np.diff(x, 2))
+
     def test_unsupported_op_inside_body_is_loud(self):
         # np.median's body needs Pair < Pair (not supported yet):
         # dies mid-trace with a loud error, never silently
