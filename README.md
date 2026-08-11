@@ -106,7 +106,7 @@ handling of compiled routines (`scipy.linalg`, `scipy.sparse`).
 ## Installation
 
 ```bash
-pip install scikit-verify
+pip install git+https://github.com/aadya940/scikit-verify.git
 ```
 
 Requires Python >= 3.11, `numpy`, and `sympy`. The import name is
