@@ -43,6 +43,7 @@ dev = [
     "pytest>=8",
     "hypothesis>=6",
     "ruff",
+    "scipy>=1.12",  # test material only: real kernels the tracer lifts
 ]
 
 [project.urls]

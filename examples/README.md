@@ -10,7 +10,7 @@ python markov_birth_death.py
  
 ## markov_birth_death.py
  
-A birth–death Markov chain on states `0..n-1`, written without matrices —
+A birth–death Markov chain on states `0..n-1`, written without matrices;
 the tridiagonal transition structure is expressed as slices:
  
 ```python
@@ -43,7 +43,7 @@ def walk_step(p, left, right, up, down):
     )
 ```
 
-Recovered update rule (one line describing all 36 interior cells —
+Recovered update rule (one line describing all 36 interior cells;
 a row of the 64×64 transition matrix, never built):
 
 ```
