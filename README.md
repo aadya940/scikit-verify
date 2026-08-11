@@ -58,13 +58,16 @@ This works on real library code, unmodified. `scipy.integrate.trapezoid`,
 called on a traced array, reveals itself:
 
 ```python
-from scipy.integrate import trapezoid
-from skverify import Pair
+from scipy.integrate import trapezoid, simpson
 
-y = Pair.array("y", np.linspace(0, 1, 8) ** 2)
-trapezoid(y, dx=0.1).formula
-# 0.05*y[0] + 0.1*y[1] + 0.1*y[2] + ... + 0.1*y[6] + 0.05*y[7]
-#   ^ the trapezoid rule's half-weight endpoints, visible at a glance
+y = np.linspace(0, 1, 8) ** 2
+to_sympy(lambda y: trapezoid(y, dx=0.1), y).formula
+# 0.05*y[0] + Sum(0.1*y[j + 1], (j, 0, 5)) + 0.05*y[7]
+#   ^ the trapezoid rule: half-weight endpoints, uniform interior
+
+to_sympy(lambda y: simpson(y, dx=0.125), np.linspace(0, 1, 9) ** 2).formula
+# 0.0417*y[0] + Sum(0.1667*y[2*j + 1], ...) + Sum(0.0833*y[2*j + 2], ...) + 0.0417*y[8]
+#   ^ composite Simpson: the alternating 4/3 and 2/3 weights, as two sums
 ```
 
 A 2-D stencil, with broadcasting and strides:
@@ -76,9 +79,27 @@ v = Pair.array("v", np.random.rand(7))
 (u[1:, :] - u[:-1, :]).formula   # u[i + 1, j] - u[i, j]
 (u + v).formula                  # u[i, j] + v[j]      (v aligns to the last axis)
 u[::2, ::-1].formula             # u[2*i, 6 - j]
-u[2].formula                     # u[2, j]
+u.T.formula                      # u[j, i]
+u[2].formula                     # u[2, i]             (surviving axis is renamed)
 u[2, 3].formula                  # u[2, 3]             (a scalar; domain is None)
 ```
+
+Unmapped pure-Python NumPy functions are traced through their own
+source: `np.diff(u, 2)` runs numpy's actual `diff` body on traced
+values:
+
+```python
+to_sympy(np.diff, np.linspace(0, 9, 10), 2).formula
+# a[i] - 2*a[i + 1] + a[i + 2]
+```
+
+`.formula` always takes one of three shapes, deterministically: an
+indexed rule like the one above (array results whose pattern is
+proven), a scalar expression, possibly containing `Sum` (reductions),
+or a `sympy.Array` of per-element formulas when no general pattern can
+be proven; the result is then exact for the given input shape. A
+pattern is never guessed: general forms are emitted only when checking
+them against every element succeeds.
 
 ## Supported
 
@@ -90,17 +111,25 @@ Current support covers N-dimensional vectorized NumPy code (up to 5-D):
   integer indexing, `...`, and their composition
 - rank broadcasting (a lower-rank operand aligns to the trailing axes;
   extent-1 stretching is not yet supported)
+- transposition (`.T`, `np.transpose`, N-D axis permutations)
 - elementwise ufuncs (`np.sin`, `np.exp`, `np.maximum`, ...)
-- `np.where` (lifted to `Piecewise`), `np.sum` (lifted to `Sum`),
-  `np.zeros_like` / `np.ones_like` / `np.full_like`
+- `np.where` (lifted to `Piecewise`), `np.sum` (lifted to `Sum`,
+  full reduction), `np.zeros_like` / `np.ones_like` / `np.full_like`
 - uniform constant arrays as operands
+- unmapped pure-Python NumPy functions, traced through their own source
+  (formulas come out per-element rather than indexed); real library code
+  built on these lifts unmodified: `scipy.integrate.trapezoid`,
+  `simpson`, `cumulative_trapezoid`, `np.diff`, `np.dot`
 
-Unsupported operations raise `NotImplementedError`. Formulas are only
-produced for operations whose semantics are implemented; there is no
-best-effort fallback.
+Every produced formula is exact, checked against the numerical
+execution. What cannot be traced exactly raises `NotImplementedError`
+naming the blocker: compiled (C) routines, conversions that would
+discard the formula (`float()`, dtype-forcing coercions), and
+operations whose semantics are not yet implemented. There is no silent
+fallback.
 
-Planned, in order: reductions over a chosen axis and transposition,
-in-place assignment, comparison and branch capture, and contract-based
+Planned, in order: reductions over a chosen axis, comparisons and
+boolean masks, in-place assignment, branch capture, and contract-based
 handling of compiled routines (`scipy.linalg`, `scipy.sparse`).
 
 ## Installation
