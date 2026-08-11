@@ -9,7 +9,7 @@ from ..registry import (
 )
 from ..helpers import axis_idx
 
-from ..pair import Pair, IDX
+from ..pair import Pair
 
 # UFUNCs, Elementwise
 _SAME = "sin cos tan sinh cosh tanh exp log sqrt floor sign".split()
@@ -98,12 +98,6 @@ def _sum(a, axis=None, **kwargs):
         lo, hi = bounds[ax]
         formula = sympy.Sum(formula, (dummies[ax], lo, hi - 1))  # inclusive
     return Pair(np.sum(a.value), formula, None)
-
-
-def _zeros(shape, **kw):
-    if not isinstance(shape, (int, np.integer)):
-        raise NotImplementedError("N-D creation arrives with N-D")
-    return Pair(np.zeros(shape), sympy.Integer(0), (0, int(shape)))
 
 
 def _zeros_like(a, **kwargs):

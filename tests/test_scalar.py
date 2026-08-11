@@ -45,7 +45,7 @@ class TestBothLanes:
 
 
 class TestReflectedOps:
-    """The __r*__ family — operand order is the classic bug."""
+    """The __r*__ family: operand order is the classic bug."""
 
     def test_rsub_order(self):
         x, _ = make()

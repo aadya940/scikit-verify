@@ -7,7 +7,6 @@ from .registry import (
 )
 from .helpers import (
     axis_idx,
-    normalize_slice,
     _AXIS_SYMBOLS,
     normalize_key,
 )
