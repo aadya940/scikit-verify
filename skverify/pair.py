@@ -19,14 +19,26 @@ class Pair:
     expressions.
     """
 
-    def __init__(self, value, formula, domain=None):
+    def __init__(self, value, formula, domain=None, steps=None):
         self.value = value  # the real ndarray/scalar, what executes
         self.formula = formula  # the sympy Expr, what it means
+        # the derivation: every intermediate formula that led here, in
+        # execution order, ending with this one. Two runs taking different
+        # branches produce different steps, because different ops ran.
+        self.steps = (steps or []) + [formula]
 
         if domain is not None and not isinstance(domain[0], tuple):
             domain = (domain,)
 
         self._axis_bounds = domain  # for ndarray
+
+    @staticmethod
+    def _steps_of(*operands):
+        collected = []
+        for x in operands:
+            if isinstance(x, Pair):
+                collected.extend(x.steps)
+        return collected
 
     @staticmethod
     def _formula_of(x):
@@ -144,7 +156,7 @@ class Pair:
                     f"index map {old_sym} -> {expr} is not affine"
                 )
         formula = self.formula.subs(index_map, simultaneous=True)
-        return Pair(value, formula, domain=axis_bounds or None)
+        return Pair(value, formula, domain=axis_bounds or None, steps=self.steps)
 
     def _getitem_nd(self, key):
         # u[1:, 2] on a 4x7 array -> entries ((1, 4), 2)
@@ -199,6 +211,7 @@ class Pair:
             value=self.value + Pair._value_of(other),
             formula=mine + theirs,  # sympy dunder does the rest
             domain=merged,
+            steps=Pair._steps_of(self, other),
         )
 
     def __radd__(self, other):  # handles  2 + u
@@ -210,6 +223,7 @@ class Pair:
             value=self.value - Pair._value_of(other),
             formula=mine - theirs,
             domain=merged,
+            steps=Pair._steps_of(self, other),
         )
 
     def __rsub__(self, other):  # handles  2 - u   (order matters!)
@@ -218,6 +232,7 @@ class Pair:
             value=Pair._value_of(other) - self.value,
             formula=theirs - mine,
             domain=merged,
+            steps=Pair._steps_of(self, other),
         )
 
     def __mul__(self, other):
@@ -226,12 +241,13 @@ class Pair:
             value=self.value * Pair._value_of(other),
             formula=mine * theirs,
             domain=merged,
+            steps=Pair._steps_of(self, other),
         )
 
     __rmul__ = __mul__
 
     def __abs__(self):
-        return Pair(abs(self.value), sympy.Abs(self.formula))
+        return Pair(abs(self.value), sympy.Abs(self.formula), steps=self.steps)
 
     def __bool__(self):
         raise NotImplementedError(
@@ -275,6 +291,7 @@ class Pair:
             value=self.value / Pair._value_of(other),
             formula=mine / theirs,
             domain=merged,
+            steps=Pair._steps_of(self, other),
         )
 
     def __rtruediv__(self, other):  # other / self
@@ -283,6 +300,7 @@ class Pair:
             value=Pair._value_of(other) / self.value,
             formula=theirs / mine,
             domain=merged,
+            steps=Pair._steps_of(self, other),
         )
 
     def __pow__(self, other):  # self ** other
@@ -291,6 +309,7 @@ class Pair:
             value=self.value ** Pair._value_of(other),
             formula=mine**theirs,
             domain=merged,
+            steps=Pair._steps_of(self, other),
         )
 
     def __rpow__(self, other):  # other ** self
@@ -299,10 +318,11 @@ class Pair:
             value=Pair._value_of(other) ** self.value,
             formula=theirs**mine,
             domain=merged,
+            steps=Pair._steps_of(self, other),
         )
 
     def __neg__(self):  # -self
-        return Pair(-self.value, -self.formula)
+        return Pair(-self.value, -self.formula, steps=self.steps)
 
     @classmethod
     def array(cls, name, value):
@@ -361,7 +381,12 @@ class Pair:
             for x in inputs
         ]
 
-        return Pair(ufunc(*values), target(*formulas), domain)
+        return Pair(
+            ufunc(*values),
+            target(*formulas),
+            domain,
+            steps=Pair._steps_of(*inputs),
+        )
 
     def __array_function__(self, func, types, args, kwargs):
         fn = FUNCTION_TABLE.get(func)

@@ -71,6 +71,7 @@ def _where(cond, a, b):
         np.where(Pair._value_of(cond), Pair._value_of(a), Pair._value_of(b)),
         sympy.Piecewise((Pair._formula_of(a), cond_f), (Pair._formula_of(b), True)),
         domain,
+        steps=Pair._steps_of(cond, a, b),
     )
 
 
@@ -81,8 +82,27 @@ def _sum(a, axis=None, **kwargs):
         return np.sum(a)  # plain input, not ours
 
     bounds = a._axis_bounds
+    if isinstance(axis, tuple):
+        raise NotImplementedError("axis tuples not supported yet")
     if axis is not None and not (axis == 0 and len(bounds) == 1):
-        raise NotImplementedError("per-axis reduction not supported yet")
+        # per-axis reduction: bind ONE letter, survivors renumber down
+        # p (3x4), axis=0:  Sum(p[j, i], (j, 0, 2))   domain (0, 4)
+        # p (3x4), axis=1:  Sum(p[i, j], (j, 0, 3))   domain (0, 3)
+        k = axis % len(bounds)
+        j = sympy.Symbol("j", integer=True)
+        rename = {axis_idx(k): j}
+        rename.update(
+            {axis_idx(ax): axis_idx(ax - 1) for ax in range(k + 1, len(bounds))}
+        )
+        lo, hi = bounds[k]
+        formula = sympy.Sum(a.formula.subs(rename, simultaneous=True), (j, lo, hi - 1))
+        new_bounds = bounds[:k] + bounds[k + 1 :]
+        return Pair(
+            np.sum(a.value, axis=k),
+            formula,
+            new_bounds or None,
+            steps=a.steps,
+        )
 
     # one Sum per axis, innermost axis innermost:
     # 1-D: Sum(p[j], (j, 0, n-1))                      (unchanged output)
@@ -97,7 +117,7 @@ def _sum(a, axis=None, **kwargs):
     for ax in reversed(range(len(bounds))):
         lo, hi = bounds[ax]
         formula = sympy.Sum(formula, (dummies[ax], lo, hi - 1))  # inclusive
-    return Pair(np.sum(a.value), formula, None)
+    return Pair(np.sum(a.value), formula, None, steps=a.steps)
 
 
 def _zeros_like(a, **kwargs):
