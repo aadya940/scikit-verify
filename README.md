@@ -49,11 +49,6 @@ out.domain
 # (0, 15)
 ```
 
-Symbol names are taken from the function's own signature. The function is
-not modified, parsed, or recompiled; it runs under CPython and dispatch is
-intercepted through the standard protocols (`__array_ufunc__`,
-`__array_function__`, operator overloading).
-
 This works on real library code, unmodified. `scipy.integrate.trapezoid`,
 called on a traced array, reveals itself:
 
