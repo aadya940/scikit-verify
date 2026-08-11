@@ -106,6 +106,16 @@ class TestWrappedFallback:
         assert s.formula[0] == A[0] - 2 * A[1] + A[2]
         assert np.allclose(s.value, np.diff(x, 2))
 
+    def test_ufunc_methods_for_object_loop(self):
+        # numpy's object-dtype ufunc loop calls elem.log() etc. instead of
+        # dispatching; Pair grows one method per mapped ufunc (registry-driven)
+        u = Pair.array("u", np.linspace(1.0, 2.0, 4))
+        assert u.log().formula == sympy.log(U[sympy.Symbol("i", integer=True)])
+        obj = np.asarray(u)  # decompression: object array of scalar Pairs
+        r = np.log(obj)
+        assert r[0].formula == sympy.log(U[0])
+        assert float(r[0].value) == np.log(u.value[0])
+
     def test_unsupported_op_inside_body_is_loud(self):
         # np.median's body needs Pair < Pair (not supported yet):
         # dies mid-trace with a loud error, never silently

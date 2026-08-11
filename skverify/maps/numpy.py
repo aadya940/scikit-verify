@@ -32,6 +32,28 @@ UFUNC_TABLE[np.maximum] = sympy.Max
 UFUNC_TABLE[np.minimum] = sympy.Min
 UFUNC_TABLE[np.arctan2] = sympy.atan2
 
+# numpy's OBJECT-dtype ufunc loop does not dispatch through __array_ufunc__:
+# it calls a same-named METHOD on each element (elem.log(), elem.exp(), ...).
+# After decompression (an object array of scalar Pairs) that convention is the
+# only way ufuncs reach us, so generate one method per mapped ufunc, each
+# re-entering the normal traced path. Registry-driven: the two lists can't drift.
+
+
+def _attach_ufunc_methods():
+    for ufunc in UFUNC_TABLE:
+        name = ufunc.__name__
+        if hasattr(Pair, name):
+            continue  # never clobber real Pair API
+
+        def method(self, *args, _ufunc=ufunc):
+            return _ufunc(self, *args)  # back through __array_ufunc__
+
+        method.__name__ = name
+        setattr(Pair, name, method)
+
+
+_attach_ufunc_methods()
+
 
 # FUNCTION TABLE (non-UFUNCS)
 
@@ -111,3 +133,6 @@ FUNCTION_TABLE[np.ones_like] = _ones_like
 FUNCTION_TABLE[np.full_like] = _full_like
 FUNCTION_TABLE[np.sum] = _sum
 FUNCTION_TABLE[np.where] = _where
+FUNCTION_TABLE[np.transpose] = lambda a, axes=None: (
+    a.transpose(axes) if isinstance(a, Pair) else np.transpose(a, axes)
+)

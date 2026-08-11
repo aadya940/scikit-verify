@@ -173,6 +173,27 @@ class Pair:
             axis_bounds=tuple(new_bounds),  # u[2, 3] -> (), remap makes it scalar
         )
 
+    def transpose(self, axes=None):
+        # u (4x7), u.T: u[i, j] -> u[j, i], bounds ((0,4),(0,7)) -> ((0,7),(0,4))
+        # axes=(2,0,1) on 3-D: result position k reads old axis axes[k]
+        if self._axis_bounds is None or len(self._axis_bounds) == 1:
+            return self  # scalars and 1-D: transpose is a no-op, like numpy
+        ndim = len(self._axis_bounds)
+        if axes is None:
+            axes = tuple(reversed(range(ndim)))
+        index_map = {
+            axis_idx(old_ax): axis_idx(new_pos) for new_pos, old_ax in enumerate(axes)
+        }
+        return self._remap(
+            value=self.value.transpose(axes),
+            index_map=index_map,
+            axis_bounds=tuple(self._axis_bounds[old_ax] for old_ax in axes),
+        )
+
+    @property
+    def T(self):
+        return self.transpose()
+
     def __add__(self, other):
         mine, theirs, merged = Pair._broadcast(self, other)
         return Pair(
