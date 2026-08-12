@@ -31,6 +31,7 @@ UFUNC_TABLE.update({getattr(np, k): getattr(sympy, v) for k, v in _RENAMED.items
 UFUNC_TABLE[np.maximum] = sympy.Max
 UFUNC_TABLE[np.minimum] = sympy.Min
 UFUNC_TABLE[np.arctan2] = sympy.atan2
+UFUNC_TABLE[np.conjugate] = sympy.conjugate
 
 # numpy's OBJECT-dtype ufunc loop does not dispatch through __array_ufunc__:
 # it calls a same-named METHOD on each element (elem.log(), elem.exp(), ...).
