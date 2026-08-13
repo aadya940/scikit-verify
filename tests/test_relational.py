@@ -175,6 +175,13 @@ class TestConsumers:
         u = make()
         assert np.maximum(u, 0).formula == sympy.Max(U[I], 0)
 
+    def test_clip_is_min_max(self):
+        u = make()
+        r = np.clip(u, 0.0, 0.5)
+        assert r.formula == sympy.Min(0.5, sympy.Max(0.0, U[I]))
+        assert np.allclose(r.value, np.clip(u.value, 0.0, 0.5))
+        assert u.clip(0.0, 0.5).formula == r.formula
+
 
 # E. edge cases
 class TestEdges:

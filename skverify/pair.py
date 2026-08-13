@@ -138,6 +138,14 @@ class Pair:
         """Boolean entering arithmetic means 0/1, as in numpy:
         (u > 0).sum() counts, mask * u selects."""
         if Pair._is_condition(formula):
+            if _piecewise_under_sum(formula):
+                # sympy's Piecewise ctor hoists conditions through Sum
+                # bounds (even with evaluate=False), leaking the bound
+                # index -- a wrong formula. Refuse until fixed upstream.
+                raise NotImplementedError(
+                    "condition over a Sum of Piecewise: sympy rewrites "
+                    "this incorrectly; restructure or use .value"
+                )
             return sympy.Piecewise((1, formula), (0, True))
         return formula
 
@@ -469,12 +477,25 @@ _MASK_OPS = {
 }
 
 
+def _piecewise_under_sum(expr):
+    return isinstance(expr, sympy.Basic) and any(
+        s.function.has(sympy.Piecewise) for s in expr.atoms(sympy.Sum)
+    )
+
+
 def _make_binary(np_op, sy_op, bridge):
     def op(self, other):
         mine, theirs, merged = Pair._broadcast(self, other, bridge=bridge)
+        # sympy's relational constructor hoists Piecewise conditions OUT
+        # of a Sum, leaking the bound index. Build unevaluated when that
+        # hazard is present; the formula is the honest raw relation.
+        if bridge and (_piecewise_under_sum(mine) or _piecewise_under_sum(theirs)):
+            formula = sy_op(mine, theirs, evaluate=False)
+        else:
+            formula = sy_op(mine, theirs)
         return Pair(
             np_op(self.value, Pair._value_of(other)),
-            sy_op(mine, theirs),
+            formula,
             domain=merged,
             steps=Pair._steps_of(self, other),
         )

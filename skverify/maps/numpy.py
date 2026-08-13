@@ -41,6 +41,11 @@ UFUNC_TABLE[np.greater_equal] = sympy.Ge
 UFUNC_TABLE[np.equal] = sympy.Eq
 UFUNC_TABLE[np.not_equal] = sympy.Ne
 
+# clip(x, lo, hi) is a 3-input ufunc behind np.clip's dispatch
+from numpy._core.umath import clip as _np_clip  # noqa: E402
+
+UFUNC_TABLE[_np_clip] = lambda x, lo, hi: sympy.Min(sympy.Max(x, lo), hi)
+
 # numpy's OBJECT-dtype ufunc loop does not dispatch through __array_ufunc__:
 # it calls a same-named METHOD on each element (elem.log(), elem.exp(), ...).
 # After decompression (an object array of scalar Pairs) that convention is the
@@ -76,6 +81,16 @@ def _where(cond, a, b):
         cond_f, (sympy.logic.boolalg.Boolean, sympy.core.relational.Relational)
     ):
         cond_f = sympy.Ne(cond_f, 0)
+    from ..pair import _piecewise_under_sum
+
+    if _piecewise_under_sum(cond_f):
+        # sympy's Piecewise ctor hoists such conditions through the Sum
+        # bound (even with evaluate=False): the result leaks the bound
+        # index and is WRONG. Loud refusal beats a wrong formula.
+        raise NotImplementedError(
+            "np.where over a Sum-of-Piecewise condition: sympy rewrites "
+            "this incorrectly; restructure or apply the condition earlier"
+        )
     return Pair(
         np.where(Pair._value_of(cond), Pair._value_of(a), Pair._value_of(b)),
         sympy.Piecewise((Pair._formula_of(a), cond_f), (Pair._formula_of(b), True)),
@@ -202,6 +217,7 @@ def _any(a, axis=None, **kwargs):
 
 
 FUNCTION_TABLE[np.sum] = _sum
+FUNCTION_TABLE[np.clip] = lambda a, lo, hi, **kw: _np_clip(a, lo, hi)
 FUNCTION_TABLE[np.all] = _all
 FUNCTION_TABLE[np.any] = _any
 FUNCTION_TABLE[np.where] = _where
