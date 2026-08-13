@@ -84,6 +84,22 @@ def _where(cond, a, b):
     )
 
 
+def _fresh_dummy(formula, n_axes, base="j"):
+    """A summation dummy not colliding with any symbol already in the
+    formula -- sum(sum(u, axis=0)) must not capture the inner Sum's j.
+
+    Axis letters don't count as taken: the reduction substitutes ALL of
+    them simultaneously, so reusing a letter's name cannot capture."""
+    letters = {axis_idx(ax).name for ax in range(n_axes)}
+    taken = {s.name for s in formula.atoms(sympy.Symbol)} - letters
+    if base not in taken:
+        return sympy.Symbol(base, integer=True)
+    k = 2
+    while f"{base}{k}" in taken:
+        k += 1
+    return sympy.Symbol(f"{base}{k}", integer=True)
+
+
 def _sum(a, axis=None, **kwargs):
     if kwargs:
         raise NotImplementedError(f"np.sum kwargs {list(kwargs)} not supported")
@@ -101,7 +117,7 @@ def _sum(a, axis=None, **kwargs):
         # p (3x4), axis=0:  Sum(p[j, i], (j, 0, 2))   domain (0, 4)
         # p (3x4), axis=1:  Sum(p[i, j], (j, 0, 3))   domain (0, 3)
         k = axis % len(bounds)
-        j = sympy.Symbol("j", integer=True)
+        j = _fresh_dummy(a.formula, len(bounds))
         rename = {axis_idx(k): j}
         rename.update(
             {axis_idx(ax): axis_idx(ax - 1) for ax in range(k + 1, len(bounds))}
@@ -120,9 +136,12 @@ def _sum(a, axis=None, **kwargs):
     # 1-D: Sum(p[j], (j, 0, n-1))                      (unchanged output)
     # 2-D: Sum(Sum(p[j0, j1], (j1, 0, m-1)), (j0, 0, n-1))
     if len(bounds) == 1:
-        dummies = [sympy.Symbol("j", integer=True)]  # keep the historical `j`
+        dummies = [_fresh_dummy(a.formula, len(bounds))]
     else:
-        dummies = [sympy.Symbol(f"j{ax}", integer=True) for ax in range(len(bounds))]
+        dummies = [
+            _fresh_dummy(a.formula, len(bounds), base=f"j{ax}")
+            for ax in range(len(bounds))
+        ]
     formula = a.formula.subs(
         {axis_idx(ax): d for ax, d in enumerate(dummies)}, simultaneous=True
     )

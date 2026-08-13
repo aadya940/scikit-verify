@@ -87,6 +87,16 @@ class TestGuardedLibraryCode:
         with pytest.raises(NotImplementedError):
             to_sympy(np.polyval, np.array([2.0, 3.0, 5.0]), np.arange(4.0))
 
+    def test_searchsorted_constant_under_path(self):
+        # a guarded C bisection returns a plain int: wrapped as a CONSTANT
+        # whose preconditions are the search's recorded bracketing
+        x = np.array([10.0, 20.0, 30.0, 40.0])
+        s = to_sympy(lambda a: np.searchsorted(a, 25), x)
+        assert s.formula == sympy.Integer(2)
+        assert int(s.value) == 2
+        A = sympy.IndexedBase("a")
+        assert s.preconditions.has(sympy.Lt(A[1], 25))
+
     def test_median_lifts_path_scoped(self):
         out = to_sympy(np.median, np.array([3.0, 1.0, 2.0]))
         assert float(out.value) == 2.0

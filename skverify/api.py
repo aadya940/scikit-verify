@@ -49,6 +49,11 @@ def _repack(out):
             if folded is not None:
                 return Pair(out.value, folded, None)
         return out
+    if isinstance(out, (int, float, complex, np.number)):
+        # a guarded C algorithm (searchsorted's bisection, argmin, ...)
+        # returned a plain number: a CONSTANT under the recorded branch
+        # preconditions. Wrap it so .formula/.preconditions exist.
+        return Pair(out, sympy.sympify(out), None)
     if not (isinstance(out, np.ndarray) and out.dtype == object):
         return out
     elements = out.ravel()

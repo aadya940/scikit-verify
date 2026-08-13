@@ -273,7 +273,12 @@ class Pair:
     __rmul__ = __mul__
 
     def __abs__(self):
-        return Pair(abs(self.value), sympy.Abs(self.formula), steps=self.steps)
+        return Pair(
+            abs(self.value),
+            sympy.Abs(self.formula),
+            domain=self._axis_bounds,
+            steps=self.steps,
+        )
 
     def __bool__(self):
         # Branch capture: a scalar condition (if x > 0:) is decided by the
@@ -361,7 +366,9 @@ class Pair:
         )
 
     def __neg__(self):  # -self
-        return Pair(-self.value, -self.formula, steps=self.steps)
+        return Pair(
+            -self.value, -self.formula, domain=self._axis_bounds, steps=self.steps
+        )
 
     @classmethod
     def array(cls, name, value):
