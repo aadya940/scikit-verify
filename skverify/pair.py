@@ -120,10 +120,28 @@ class Pair:
         return formula.subs(index_map, simultaneous=True)
 
     @staticmethod
-    def _broadcast(a, b):
+    def _bridge_numeric(formula):
+        """Boolean entering arithmetic means 0/1, as in numpy:
+        (u > 0).sum() counts, mask * u selects."""
+        # NOT isinstance(..., Boolean): sympy Symbols subclass Boolean.
+        # Name the actual condition node types.
+        if isinstance(
+            formula,
+            (
+                sympy.core.relational.Relational,
+                sympy.logic.boolalg.BooleanFunction,
+                sympy.logic.boolalg.BooleanAtom,
+            ),
+        ):
+            return sympy.Piecewise((1, formula), (0, True))
+        return formula
+
+    @staticmethod
+    def _broadcast(a, b, bridge=True):
         """Formulas + merged bounds for a binary op.
 
         u (4x7) + v (7):  u[i, j] + v[j],  bounds ((0, 4), (0, 7))
+        bridge=False (mask algebra, comparisons) keeps Booleans raw.
         """
         bounds_a, bounds_b = Pair._domain_of(a), Pair._domain_of(b)
         merged = Pair._merge_domains(bounds_a, bounds_b)
@@ -132,6 +150,9 @@ class Pair:
         if merged is not None:
             formula_a = Pair._shift_axes(formula_a, bounds_a, len(merged))
             formula_b = Pair._shift_axes(formula_b, bounds_b, len(merged))
+        if bridge:
+            formula_a = Pair._bridge_numeric(formula_a)
+            formula_b = Pair._bridge_numeric(formula_b)
         return formula_a, formula_b, merged
 
     def _remap(self, value, index_map, axis_bounds):
@@ -403,3 +424,59 @@ class Pair:
         raise NotImplementedError(
             f"np.{func.__name__} is compiled; needs a contract",
         )
+
+
+# relational & mask layer
+# u > 0        -> Pair([True,...], u[i] > 0)     one rule, letters/domains reused
+# (a) & (b)    -> And(a, b)                       raw Booleans, no bridge
+# (u > 0).sum()-> Sum(Piecewise((1, cond), (0, True)))   via the bridge
+
+_RELATIONALS = {
+    "__lt__": (np.less, sympy.Lt),
+    "__le__": (np.less_equal, sympy.Le),
+    "__gt__": (np.greater, sympy.Gt),
+    "__ge__": (np.greater_equal, sympy.Ge),
+    "__eq__": (np.equal, sympy.Eq),
+    "__ne__": (np.not_equal, sympy.Ne),
+}
+
+_MASK_OPS = {
+    "__and__": (np.bitwise_and, sympy.And),
+    "__or__": (np.bitwise_or, sympy.Or),
+    "__xor__": (np.bitwise_xor, sympy.Xor),
+}
+
+
+def _make_binary(np_op, sy_op, bridge):
+    def op(self, other):
+        mine, theirs, merged = Pair._broadcast(self, other, bridge=bridge)
+        return Pair(
+            np_op(self.value, Pair._value_of(other)),
+            sy_op(mine, theirs),
+            domain=merged,
+            steps=Pair._steps_of(self, other),
+        )
+
+    return op
+
+
+for _name, (_np_op, _sy_op) in _RELATIONALS.items():
+    setattr(Pair, _name, _make_binary(_np_op, _sy_op, bridge=True))
+for _name, (_np_op, _sy_op) in _MASK_OPS.items():
+    setattr(Pair, _name, _make_binary(_np_op, _sy_op, bridge=False))
+    setattr(Pair, "__r" + _name[2:], _make_binary(_np_op, _sy_op, bridge=False))
+
+
+def _invert(self):
+    return Pair(
+        np.bitwise_not(self.value),
+        sympy.Not(self.formula),
+        domain=self._axis_bounds,
+        steps=self.steps,
+    )
+
+
+Pair.__invert__ = _invert
+Pair.all = lambda self, axis=None: np.all(self, axis=axis)
+Pair.any = lambda self, axis=None: np.any(self, axis=axis)
+Pair.__hash__ = None  # elementwise __eq__ (numpy semantics): unhashable, like ndarray
