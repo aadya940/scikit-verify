@@ -77,6 +77,8 @@ u[::2, ::-1].formula             # u[2*i, 6 - j]
 u.T.formula                      # u[j, i]
 u[2].formula                     # u[2, i]             (surviving axis is renamed)
 u[2, 3].formula                  # u[2, 3]             (a scalar; domain is None)
+np.where(u > 0, u, 0.0*u).formula   # Piecewise((u[i, j], u[i, j] > 0), (0, True))
+np.sum(v > 0.5).formula          # Sum(Piecewise((1, v[j] > 0.5), (0, True)), (j, 0, 6))
 ```
 
 Unmapped pure-Python NumPy functions are traced through their own
@@ -107,6 +109,9 @@ Current support covers N-dimensional vectorized NumPy code (up to 5-D):
 - rank broadcasting (a lower-rank operand aligns to the trailing axes;
   extent-1 stretching is not yet supported)
 - transposition (`.T`, `np.transpose`, N-D axis permutations)
+- comparisons and boolean masks: `u > 0` lifts to `u[i] > 0`, masks
+  combine with `& | ~`, enter arithmetic as 0/1 (`(u > 0).sum()`
+  counts), and reduce via `.all()` / `.any()`
 - elementwise ufuncs (`np.sin`, `np.exp`, `np.maximum`, ...)
 - `np.where` (lifted to `Piecewise`), `np.sum` (lifted to `Sum`,
   full reduction), `np.zeros_like` / `np.ones_like` / `np.full_like`
@@ -123,9 +128,9 @@ discard the formula (`float()`, dtype-forcing coercions), and
 operations whose semantics are not yet implemented. There is no silent
 fallback.
 
-Planned, in order: reductions over a chosen axis, comparisons and
-boolean masks, in-place assignment, branch capture, and contract-based
-handling of compiled routines (`scipy.linalg`, `scipy.sparse`).
+Planned, in order: in-place assignment, branch capture (data-dependent
+`if` becomes a recorded precondition), and contract-based handling of
+compiled routines (`scipy.linalg`, `scipy.sparse`).
 
 ## Installation
 
