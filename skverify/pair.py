@@ -13,6 +13,8 @@ from .helpers import (
 
 IDX = axis_idx(0)  # `i`
 
+_GUARDS = []  # branch conditions taken during a trace; harvested by to_sympy
+
 
 class Pair:
     """Convert math and array style operations to SymPy
@@ -120,19 +122,22 @@ class Pair:
         return formula.subs(index_map, simultaneous=True)
 
     @staticmethod
-    def _bridge_numeric(formula):
-        """Boolean entering arithmetic means 0/1, as in numpy:
-        (u > 0).sum() counts, mask * u selects."""
-        # NOT isinstance(..., Boolean): sympy Symbols subclass Boolean.
-        # Name the actual condition node types.
-        if isinstance(
+    def _is_condition(formula):
+        # NOT isinstance(..., Boolean): sympy Symbols subclass Boolean
+        return isinstance(
             formula,
             (
                 sympy.core.relational.Relational,
                 sympy.logic.boolalg.BooleanFunction,
                 sympy.logic.boolalg.BooleanAtom,
             ),
-        ):
+        )
+
+    @staticmethod
+    def _bridge_numeric(formula):
+        """Boolean entering arithmetic means 0/1, as in numpy:
+        (u > 0).sum() counts, mask * u selects."""
+        if Pair._is_condition(formula):
             return sympy.Piecewise((1, formula), (0, True))
         return formula
 
@@ -271,8 +276,18 @@ class Pair:
         return Pair(abs(self.value), sympy.Abs(self.formula), steps=self.steps)
 
     def __bool__(self):
+        # Branch capture: a scalar condition (if x > 0:) is decided by the
+        # concrete lane and RECORDED -- the branch taken becomes a hypothesis
+        # on the certificate. to_sympy harvests _GUARDS into .preconditions.
+        if Pair._is_condition(self.formula) and np.ndim(self.value) == 0:
+            outcome = bool(self.value)
+            _GUARDS.append(self.formula if outcome else sympy.Not(self.formula))
+            return outcome
+        # arrays: ambiguous, like numpy's own error -- use .all()/.any().
+        # non-conditions: silent truthiness on math is never meaningful.
         raise NotImplementedError(
-            "data-dependent branch on a traced value"  # guard-logging comes later
+            "data-dependent branch on a traced value; "
+            "for masks use .all()/.any(), for combining use & | ~"
         )
 
     # bare-number conversions discard the formula: the value keeps computing

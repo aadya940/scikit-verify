@@ -5,7 +5,7 @@ import inspect
 import numpy as np
 import sympy
 
-from .pair import Pair
+from .pair import _GUARDS, Pair
 from .helpers import axis_idx
 
 
@@ -19,7 +19,13 @@ def to_sympy(fn, *args):
     Returns the traced result: ``.formula``, ``.value``, ``.domain``.
     """
     wrapped = [_wrap(name, val) for name, val in _infer_names(fn, args)]
-    return _repack(fn(*wrapped))
+    _GUARDS.clear()
+    out = _repack(fn(*wrapped))
+    if isinstance(out, Pair):
+        # every branch taken during the trace, as one hypothesis: the
+        # formula holds for inputs satisfying these preconditions
+        out.preconditions = sympy.And(*_GUARDS) if _GUARDS else sympy.true
+    return out
 
 
 def _wrap(name, val):

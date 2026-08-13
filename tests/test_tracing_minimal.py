@@ -164,9 +164,9 @@ class TestWrappedFallback:
         assert r[0].formula == sympy.log(U[0])
         assert float(r[0].value) == np.log(u.value[0])
 
-    def test_unsupported_op_inside_body_is_loud(self):
-        # np.median's body needs Pair < Pair (not supported yet):
-        # dies mid-trace with a loud error, never silently
+    def test_median_traces_through_guarded_sort(self):
+        # median's body compares and branches; guards record each branch
+        # and the concrete lane keeps it running
         u = make()
-        with pytest.raises((NotImplementedError, TypeError)):
-            np.median(u)
+        r = np.median(u)
+        assert float(r.value) == np.median(u.value)
