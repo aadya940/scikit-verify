@@ -13,6 +13,8 @@ normally, and each array operation additionally constructs the corresponding
 SymPy expression. The recovered expressions can then be checked against a reference, against
 the numerical execution itself, or handed to ordinary SymPy.
 
+This repo is under construction 🚧
+
 ## Uses
 
 - **Check code against the paper.** Recover the equation your code
