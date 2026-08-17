@@ -79,11 +79,24 @@ def _repack(out):
 
 
 def _shift_indices(expr, offset):
-    """u[0] - u[1]  ->  u[0 + offset] - u[1 + offset], every index shifted."""
+    """u[0] - u[1] -> u[offset] - u[1 + offset]. Only concrete integer
+    indices move; symbolic letters (a surviving row index) stay put."""
     return expr.replace(
         lambda x: isinstance(x, sympy.Indexed),
-        lambda x: x.base[tuple(e + offset for e in x.indices)],
+        lambda x: x.base[tuple(e + offset if e.is_Integer else e for e in x.indices)],
     )
+
+
+def _shift_slot(expr, offset, slot):
+    """Shift index position `slot` only: y[0, 3] -> y[0 + offset, 3]."""
+
+    def shifted(x):
+        idx = list(x.indices)
+        if slot < len(idx):
+            idx[slot] = idx[slot] + offset
+        return x.base[tuple(idx)]
+
+    return expr.replace(lambda x: isinstance(x, sympy.Indexed), shifted)
 
 
 def _fold_poly(expr):
@@ -141,11 +154,14 @@ def _fold_add(expr):
     terms = list(expr.args)
     keyed = []
     for t in terms:
-        idxs = [e for a in t.atoms(sympy.Indexed) for e in a.indices]
+        idxs = [
+            e
+            for a in t.atoms(sympy.Indexed)
+            for e in a.indices
+            if e.is_Integer
+        ]
         if not idxs:
-            return None  # loose constants: out of scope, keep the Add
-        if not all(e.is_Integer for e in idxs):
-            return None  # already symbolic: nothing to fold
+            return None  # loose constants or fully symbolic: nothing to fold
         keyed.append((min(idxs), t))
     keyed.sort(key=lambda kt: kt[0])
     terms = [t for _, t in keyed]
@@ -195,6 +211,24 @@ def _recompress(formulas):
             for k in range(len(formulas))
         ):
             return candidate
+
+    # per-slot: elements that differ only in ONE index position, e.g. the
+    # per-row integrals of a 2-D reduction: e_r = 0.05*y[r,0] + ...
+    slots = {
+        len(a.indices) for f in formulas for a in f.atoms(sympy.Indexed)
+    }
+    if slots and max(slots) > 1:
+        for slot in range(max(slots)):
+            candidate = _shift_slot(formulas[0], i, slot)
+            if all(
+                sympy.expand(candidate.subs(i, k) - formulas[k]) == 0
+                for k in range(len(formulas))
+            ):
+                if isinstance(candidate, sympy.Add):
+                    inner = _fold_add(candidate)
+                    if inner is not None:
+                        return inner
+                return candidate
 
     # cumulative: elements that GROW (running sums) are prefix sums of a
     # shiftable difference.  cumtrapz: elem[k+1]-elem[k] = y[k+1]/2 + y[k+2]/2
