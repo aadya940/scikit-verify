@@ -83,9 +83,7 @@ class TestBranchCapture:
 class TestGuardedLibraryCode:
     def test_polyval_lifts_horner_elementwise(self):
         out = to_sympy(np.polyval, np.array([2.0, 3.0, 5.0]), np.arange(4.0))
-        assert np.allclose(
-            out.value, np.polyval([2.0, 3.0, 5.0], np.arange(4.0))
-        )
+        assert np.allclose(out.value, np.polyval([2.0, 3.0, 5.0], np.arange(4.0)))
         P = sympy.IndexedBase("p")
         assert out.formula.has(P[0]) and out.formula.has(P[2])
 

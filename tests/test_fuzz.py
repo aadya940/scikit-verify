@@ -87,6 +87,7 @@ def _mask_written(u, k):
     r[r > 0.5] = 0.5
     return r
 
+
 VALUES = st.floats(-2.0, 2.0, allow_nan=False, width=32)
 
 

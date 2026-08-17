@@ -86,9 +86,7 @@ class TestMaskedWrite:
         m = Pair.array("m", np.arange(5.0))
         m[m > 2.5] = 0.0
         M = sympy.IndexedBase("m")
-        assert m.formula == sympy.Piecewise(
-            (0.0, sympy.Gt(M[I], 2.5)), (M[I], True)
-        )
+        assert m.formula == sympy.Piecewise((0.0, sympy.Gt(M[I], 2.5)), (M[I], True))
         assert np.allclose(m.value, [0, 1, 2, 0, 0])
 
     def test_array_under_mask_refused(self):
@@ -124,9 +122,7 @@ class TestSetitem2D:
         for r in range(3):
             for c in range(4):
                 got = float(
-                    sympy.N(
-                        u.formula.subs({I: r, J: c}, simultaneous=True).xreplace(m)
-                    )
+                    sympy.N(u.formula.subs({I: r, J: c}, simultaneous=True).xreplace(m))
                 )
                 assert np.isclose(got, u.value[r, c])
 

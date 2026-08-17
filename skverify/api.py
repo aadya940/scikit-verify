@@ -18,15 +18,29 @@ def to_sympy(fn, *args):
     (an ``n=``, an ``axis=``), not mathematics.
     Returns the traced result: ``.formula``, ``.value``, ``.domain``.
     """
+    from .instrument import instrument
+
     wrapped = [_wrap(name, val) for name, val in _infer_names(fn, args)]
     _GUARDS.clear()
     _OPAQUE.clear()
-    out = _repack(fn(*wrapped))
+    sites = ()
+    try:
+        out = _repack(fn(*wrapped))
+    except (NotImplementedError, ValueError, TypeError, AttributeError):
+        # a wall the plain trace cannot pass; retry a semantically
+        # identical instrumented copy (math-neutral calls replaced)
+        fn_run, sites = instrument(fn)
+        if not sites:
+            raise
+        _GUARDS.clear()
+        _OPAQUE.clear()
+        out = _repack(fn_run(*wrapped))
     if isinstance(out, Pair):
         # every branch taken during the trace, as one hypothesis: the
         # formula holds for inputs satisfying these preconditions
         out.preconditions = sympy.And(*_GUARDS) if _GUARDS else sympy.true
         out.unchecked = tuple(_OPAQUE)
+        out.instrumented = sites
     return out
 
 
@@ -122,9 +136,7 @@ def _fold_poly(expr):
     xs = [
         s
         for s in expr.free_symbols
-        if isinstance(s, sympy.Symbol)
-        and s not in _AXIS_SYMBOLS
-        and s not in labels
+        if isinstance(s, sympy.Symbol) and s not in _AXIS_SYMBOLS and s not in labels
     ]
     if len(xs) != 1:
         return None
@@ -156,12 +168,7 @@ def _fold_add(expr):
     terms = list(expr.args)
     keyed = []
     for t in terms:
-        idxs = [
-            e
-            for a in t.atoms(sympy.Indexed)
-            for e in a.indices
-            if e.is_Integer
-        ]
+        idxs = [e for a in t.atoms(sympy.Indexed) for e in a.indices if e.is_Integer]
         if not idxs:
             return None  # loose constants or fully symbolic: nothing to fold
         keyed.append((min(idxs), t))
@@ -216,9 +223,7 @@ def _recompress(formulas):
 
     # per-slot: elements that differ only in ONE index position, e.g. the
     # per-row integrals of a 2-D reduction: e_r = 0.05*y[r,0] + ...
-    slots = {
-        len(a.indices) for f in formulas for a in f.atoms(sympy.Indexed)
-    }
+    slots = {len(a.indices) for f in formulas for a in f.atoms(sympy.Indexed)}
     if slots and max(slots) > 1:
         for slot in range(max(slots)):
             candidate = _shift_slot(formulas[0], i, slot)

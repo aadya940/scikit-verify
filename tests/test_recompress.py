@@ -111,11 +111,7 @@ class TestSlotFold:
         t = to_sympy(lambda y: trapezoid(y, dx=0.1, axis=1), Y2)
         assert t.formula.has(sympy.Sum)
         Y = sympy.IndexedBase("y")
-        m = {
-            Y[r, c]: sympy.Float(Y2[r, c])
-            for r in range(rows)
-            for c in range(8)
-        }
+        m = {Y[r, c]: sympy.Float(Y2[r, c]) for r in range(rows) for c in range(8)}
         for r in range(rows):
             got = float(sympy.N(t.formula.subs(I, r).doit().xreplace(m)))
             assert np.isclose(got, t.value[r])

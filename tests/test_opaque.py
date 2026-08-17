@@ -13,15 +13,14 @@ class TestOpaqueCalls:
         A0 = np.array([[4.0, 1.0], [1.0, 3.0]])
         b0 = np.array([1.0, 2.0])
         r = to_sympy(lambda A, b: np.linalg.solve(A, b), A0, b0)
-        A = sympy.IndexedBase("A")
-        B = sympy.IndexedBase("b")
-        i, j = sympy.symbols("i j", integer=True)
-        assert r.formula == sympy.Function("solve")(A[i, j], B[i])
+        i = sympy.Symbol("i", integer=True)
+        assert r.formula == sympy.IndexedBase("solve_0")[i]
         assert np.allclose(r.value, np.linalg.solve(A0, b0))
-        name, verdicts = r.unchecked[0]
+        name, verdicts, definition = r.unchecked[0]
         assert name == "solve"
         assert dict(verdicts)["square"] == "ok"
         assert dict(verdicts)["residual"] == "ok"
+        assert definition == ("solve_0[i]", "solve(A[i, j], b[i])")
 
     def test_requires_violation_is_recorded(self):
         A0 = np.zeros((2, 3))
@@ -32,7 +31,7 @@ class TestOpaqueCalls:
         A0 = np.array([[2.0, 0.0], [0.0, 2.0]])
         b0 = np.array([1.0, 1.0])
         r = to_sympy(lambda A, b: np.linalg.solve(A, b) * 2.0, A0, b0)
-        assert r.formula.has(sympy.Function("solve"))
+        assert r.formula.has(sympy.IndexedBase("solve_0"))
         assert np.allclose(r.value, np.linalg.solve(A0, b0) * 2.0)
 
     def test_norm_lifts_through_its_python_body(self):
@@ -47,14 +46,13 @@ class TestOpaqueCalls:
             return np.asarray(x, dtype=float) * 0 + 7.0
 
         r = Pair._opaque_call(fake, (u,), {})
-        assert r.formula == sympy.Function("fake")(
-            sympy.IndexedBase("u")[sympy.Symbol("i", integer=True)]
-        )
+        assert isinstance(r.formula, sympy.Indexed)
         from skverify.pair import _OPAQUE
 
-        name, verdicts = _OPAQUE[-1]
+        name, verdicts, definition = _OPAQUE[-1]
         assert name == "fake"
         assert dict(verdicts)["contract"] == "unknown"
+        assert "fake(u[i])" in definition[1]
 
     def test_no_opaque_calls_means_empty(self):
         r = to_sympy(lambda x: x * 2.0, np.arange(3.0))
@@ -63,9 +61,8 @@ class TestOpaqueCalls:
     def test_unmapped_single_out_ufunc_goes_opaque(self):
         u = Pair.array("u", np.array([1.0, 4.0]))
         r = np.cbrt(u)
-        U = sympy.IndexedBase("u")
-        i = sympy.Symbol("i", integer=True)
-        assert r.formula == sympy.Function("cbrt")(U[i])
+        assert isinstance(r.formula, sympy.Indexed)
+        assert str(r.formula.base).startswith("cbrt")
         assert np.allclose(r.value, np.cbrt(u.value))
 
     def test_multi_output_ufunc_still_refuses(self):

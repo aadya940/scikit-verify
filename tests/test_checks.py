@@ -75,7 +75,7 @@ class TestCentered:
 
     def test_kdv_bad_derivative_off_center(self):
         u = Pair.array("u", np.arange(8.0))
-        good = u[2:] - u[:-2]     # offsets 0, 2 about 1
+        good = u[2:] - u[:-2]  # offsets 0, 2 about 1
         bad_shifted = u[3:] - u[1:-2]  # offsets 1, 3: not about 1
         assert checks.centered(good, at=1).verdict == checks.PROVEN
         assert checks.centered(bad_shifted, at=1).verdict == checks.REFUTED
@@ -88,8 +88,8 @@ class TestCentered:
 class TestChecksOnRealKernels:
     def test_kdv_bad_derivative_refuted_end_to_end(self):
         u = Pair.array("u", np.cosh(np.linspace(-3, 3, 12)) ** -2)
-        good_ux = (u[2:] - u[:-2])
-        bad_ux = (u[3:] - u[1:-2])
+        good_ux = u[2:] - u[:-2]
+        bad_ux = u[3:] - u[1:-2]
         assert checks.centered(good_ux, at=1).verdict == checks.PROVEN
         assert checks.centered(bad_ux, at=1).verdict == checks.REFUTED
 

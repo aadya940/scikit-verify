@@ -221,6 +221,8 @@ def _gradient(f, *varargs, axis=None, edge_order=1):
 
 
 FUNCTION_TABLE[np.gradient] = _gradient
+
+
 def _ascontiguousarray(a, dtype=None, **kwargs):
     if not isinstance(a, Pair):
         return np.ascontiguousarray(a, dtype=dtype)

@@ -217,5 +217,6 @@ class TestEdges:
     def test_isnan_goes_opaque(self):
         u = make()
         r = np.isnan(u)
-        assert r.formula == sympy.Function("isnan")(U[I])
+        assert isinstance(r.formula, sympy.Indexed)
+        assert str(r.formula.base).startswith("isnan")
         assert np.array_equal(r.value, np.isnan(u.value))

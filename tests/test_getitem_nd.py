@@ -146,9 +146,11 @@ class TestRefusals:
         with pytest.raises(NotImplementedError):
             u[:, None]
 
-    def test_fancy(self, u):
-        with pytest.raises(NotImplementedError):
-            u[[0, 1]]
+    def test_fancy_gathers_concrete_positions(self, u):
+        out = u[[0, 1]]
+        assert out.dtype == object
+        assert out[0].formula == U[0, I]
+        assert np.allclose(out[1].value, u.value[1])
 
     def test_bool_scalar(self, u):
         with pytest.raises(NotImplementedError):

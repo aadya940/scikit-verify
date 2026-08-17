@@ -121,9 +121,7 @@ class Pair:
         if isinstance(x, np.ndarray) and x.dtype == object:
             elems = x.ravel()
             if all(isinstance(e, Pair) for e in elems):
-                return np.array([e.value for e in elems], dtype=float).reshape(
-                    x.shape
-                )
+                return np.array([e.value for e in elems], dtype=float).reshape(x.shape)
         return x
 
     @staticmethod
@@ -246,18 +244,15 @@ class Pair:
         # written region, the value's rule (re-indexed) inside it
         if self._axis_bounds is None:
             raise TypeError("scalar Pair does not support item assignment")
-        val_formula = Pair._formula_of(val)
         if isinstance(key, Pair):
             if Pair._is_condition(key.formula):
-                if isinstance(val, (Pair, np.ndarray)) and np.ndim(
-                    Pair._value_of(val)
-                ):
+                if isinstance(val, (Pair, np.ndarray)) and np.ndim(Pair._value_of(val)):
                     raise NotImplementedError(
                         "masked assignment with an array value is data-dependent"
                     )
                 self.value[key.value] = Pair._value_of(val)
                 self.formula = sympy.Piecewise(
-                    (val_formula, key.formula), (self.formula, True)
+                    (Pair._formula_of(val), key.formula), (self.formula, True)
                 )
                 self.steps = Pair._steps_of(self, key, val) + [self.formula]
                 return
@@ -265,6 +260,34 @@ class Pair:
 
         lengths = tuple(hi - lo for lo, hi in self._axis_bounds)
         entries = normalize_key(key, lengths)
+        seq = None
+        if isinstance(val, (tuple, list)):
+            seq = list(val)
+        elif isinstance(val, np.ndarray) and val.dtype == object:
+            seq = list(val.ravel())
+        if seq is not None:
+            # a sequence of traced scalars: decompose into scalar writes
+            axes_ranges = []
+            for ax, entry in enumerate(entries):
+                if isinstance(entry, tuple):
+                    start, stop, step = entry
+                    if step != 1:
+                        raise NotImplementedError(
+                            "strided assignment not supported yet"
+                        )
+                    axes_ranges.append(range(start, stop))
+                else:
+                    axes_ranges.append(range(entry, entry + 1))
+            positions = list(np.ndindex(*[len(r) for r in axes_ranges]))
+            if len(positions) != len(seq):
+                raise NotImplementedError(
+                    "assigned sequence length must match the region"
+                )
+            for pos, elem in zip(positions, seq):
+                concrete = tuple(axes_ranges[ax][p] for ax, p in enumerate(pos))
+                self[concrete if len(concrete) > 1 else concrete[0]] = elem
+            return
+        val_formula = Pair._formula_of(val)
         condition = []
         val_map = {}
         val_rank = 0
@@ -273,9 +296,7 @@ class Pair:
             if isinstance(entry, tuple):
                 start, stop, step = entry
                 if step != 1:
-                    raise NotImplementedError(
-                        "strided assignment not supported yet"
-                    )
+                    raise NotImplementedError("strided assignment not supported yet")
                 if not (start == 0 and stop == lengths[ax]):
                     condition.append(sympy.Ge(sym, start))
                     condition.append(sympy.Lt(sym, stop))
@@ -320,6 +341,22 @@ class Pair:
     @property
     def T(self):
         return self.transpose()
+
+    def reshape(self, shape, *rest):
+        if rest:
+            shape = (shape, *rest)
+        if isinstance(shape, (int, np.integer)):
+            shape = (int(shape),)
+        shape = tuple(int(n) for n in shape)
+        current = tuple(hi - lo for lo, hi in (self._axis_bounds or ()))
+        target = tuple(
+            current and int(np.prod(current)) if n == -1 else n for n in shape
+        )
+        if target == current:
+            return self
+        raise NotImplementedError(
+            "reshape that changes the layout is not supported yet"
+        )
 
     def __add__(self, other):
         mine, theirs, merged = Pair._broadcast(self, other)
@@ -504,7 +541,32 @@ class Pair:
         """Slicing and integer indexing; 1-D is just the N=1 case."""
         if self._axis_bounds is None:
             raise TypeError("scalar Pair is not subscriptable")
+        gathered = self._fancy_gather(key)
+        if gathered is not None:
+            return gathered
         return self._getitem_nd(key)
+
+    def _fancy_gather(self, key):
+        """Concrete integer-array indexing (diag_indices and friends):
+        the positions are compile-time facts, so gather scalar Pairs per
+        position and return the decompressed object array."""
+
+        def is_index_array(k):
+            return (
+                isinstance(k, (list, np.ndarray)) and np.asarray(k).dtype.kind in "iu"
+            )
+
+        parts = key if isinstance(key, tuple) else (key,)
+        if not any(is_index_array(k) for k in parts):
+            return None
+        if not all(is_index_array(k) for k in parts):
+            raise NotImplementedError("mixed fancy/slice indexing not supported")
+        arrays = np.broadcast_arrays(*[np.asarray(k) for k in parts])
+        out = np.empty(arrays[0].shape, dtype=object)
+        for pos in np.ndindex(arrays[0].shape):
+            idx = tuple(int(a[pos]) for a in arrays)
+            out[pos] = self[idx if len(idx) > 1 else idx[0]]
+        return out
 
     def __array_ufunc__(self, ufunc, method, *inputs, out=None, **kwargs):
         if out is not None:
@@ -586,16 +648,22 @@ class Pair:
                 # a concrete operand: named, so the formula never hides it
                 formulas.append(sympy.Symbol(f"const{n_const}"))
                 n_const += 1
-        formula = sympy.Function(func.__name__)(*formulas)
-        _OPAQUE.append(check_call(func.__name__, values, result))
-        domain = (
-            tuple((0, n) for n in np.shape(result))
-            if isinstance(result, np.ndarray)
-            else None
+        call = sympy.Function(func.__name__)(*formulas)
+        shape = np.shape(result) if hasattr(result, "shape") else ()
+        if shape:
+            # array output: a fresh indexed symbol, so downstream slicing
+            # and arithmetic work; the definition rides in the record
+            base = sympy.IndexedBase(f"{func.__name__}_{len(_OPAQUE)}")
+            letters = tuple(axis_idx(ax) for ax in range(len(shape)))
+            formula = base[letters]
+            domain = tuple((0, int(n)) for n in shape)
+        else:
+            formula = call
+            domain = None
+        _OPAQUE.append(
+            check_call(func.__name__, values, result) + ((str(formula), str(call)),)
         )
-        return Pair(
-            result, formula, domain=domain, steps=Pair._steps_of(*args)
-        )
+        return Pair(result, formula, domain=domain, steps=Pair._steps_of(*args))
 
     def __array_function__(self, func, types, args, kwargs):
         fn = FUNCTION_TABLE.get(func)
