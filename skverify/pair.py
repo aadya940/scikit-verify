@@ -14,6 +14,7 @@ from .helpers import (
 IDX = axis_idx(0)  # `i`
 
 _GUARDS = []  # branch conditions taken during a trace; harvested by to_sympy
+_OPAQUE = []  # opaque compiled calls made during a trace, with contract verdicts
 
 
 class Pair:
@@ -484,7 +485,11 @@ class Pair:
 
         target = UFUNC_TABLE.get(ufunc)
         if target is None:
-            raise NotImplementedError(f"ufunc {ufunc.__name__} not mapped")
+            if ufunc.nout != 1:
+                raise NotImplementedError(
+                    f"ufunc {ufunc.__name__} has {ufunc.nout} outputs"
+                )
+            return Pair._opaque_call(ufunc, inputs, kwargs)
 
         values = [Pair._value_of(x) for x in inputs]
         domain = Pair._merge_domains(*(Pair._domain_of(x) for x in inputs))
@@ -504,18 +509,61 @@ class Pair:
             steps=Pair._steps_of(*inputs),
         )
 
+    @staticmethod
+    def _opaque_call(func, args, kwargs):
+        """A compiled routine the trace cannot enter: run it on the values,
+        name it in the formula, snapshot inputs against hidden mutation,
+        and record the call with its contract verdicts."""
+        from .contracts import check_call
+
+        pair_args = [a for a in args if isinstance(a, Pair)]
+        snapshots = [
+            np.asarray(a.value).tobytes()
+            for a in pair_args
+            if isinstance(a.value, np.ndarray)
+        ]
+        values = [Pair._value_of(a) for a in args]
+        result = func(*values, **kwargs)
+        after = [
+            np.asarray(a.value).tobytes()
+            for a in pair_args
+            if isinstance(a.value, np.ndarray)
+        ]
+        if snapshots != after:
+            raise NotImplementedError(
+                f"{func.__name__} mutated a traced input in place"
+            )
+        formulas = []
+        for a in args:
+            if isinstance(a, Pair):
+                formulas.append(a.formula)
+            elif np.isscalar(a):
+                formulas.append(sympy.sympify(a))
+        formula = sympy.Function(func.__name__)(*formulas)
+        _OPAQUE.append(check_call(func.__name__, values, result))
+        domain = (
+            tuple((0, n) for n in np.shape(result))
+            if isinstance(result, np.ndarray)
+            else None
+        )
+        return Pair(
+            result, formula, domain=domain, steps=Pair._steps_of(*args)
+        )
+
     def __array_function__(self, func, types, args, kwargs):
         fn = FUNCTION_TABLE.get(func)
         if fn is not None:
             return fn(*args, **kwargs)  # curated: indexed formulas
+        from .contracts import CONTRACTS
+
+        if func.__name__ in CONTRACTS:
+            return Pair._opaque_call(func, args, kwargs)
         inner = getattr(func, "__wrapped__", None)
         if inner is not None:
             # pure-Python numpy: run its real body on the Pairs; slices and
             # arithmetic inside dispatch back here, formulas unrolled per element
             return inner(*args, **kwargs)
-        raise NotImplementedError(
-            f"np.{func.__name__} is compiled; needs a contract",
-        )
+        return Pair._opaque_call(func, args, kwargs)
 
 
 # relational & mask layer

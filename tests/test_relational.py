@@ -214,7 +214,8 @@ class TestEdges:
         with pytest.raises(NotImplementedError):
             u[u > 0]  # mask indexing is a later feature
 
-    def test_isnan_dies_loudly(self):
+    def test_isnan_goes_opaque(self):
         u = make()
-        with pytest.raises((NotImplementedError, TypeError)):
-            np.isnan(u)
+        r = np.isnan(u)
+        assert r.formula == sympy.Function("isnan")(U[I])
+        assert np.array_equal(r.value, np.isnan(u.value))
