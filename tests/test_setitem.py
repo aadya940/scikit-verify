@@ -97,6 +97,60 @@ class TestMaskedWrite:
             m[m > 2.5] = np.arange(5.0)
 
 
+class TestSetitem2D:
+    def test_row_write(self):
+        u = Pair.array("u", np.zeros((3, 4)))
+        v = Pair.array("v", np.arange(4.0))
+        u[1, :] = v
+        assert np.allclose(u.value[1], np.arange(4.0))
+        assert np.allclose(u.value[0], 0)
+
+    def test_interior_block_write(self):
+        u = Pair.array("u", np.zeros((4, 5)))
+        d = Pair.array("d", np.ones((2, 3)))
+        u[1:3, 1:4] = d
+        want = np.zeros((4, 5))
+        want[1:3, 1:4] = 1.0
+        assert np.allclose(u.value, want)
+        cond = u.formula.args[0][1]
+        assert cond.has(sympy.Ge(I, 1)) and cond.has(sympy.Lt(J, 4))
+
+    def test_2d_write_evaluates(self):
+        base = np.arange(12.0).reshape(3, 4)
+        u = Pair.array("u", base.copy())
+        u[0, :] = 0.0
+        U2 = sympy.IndexedBase("u")
+        m = {U2[r, c]: sympy.Float(base[r, c]) for r in range(3) for c in range(4)}
+        for r in range(3):
+            for c in range(4):
+                got = float(
+                    sympy.N(
+                        u.formula.subs({I: r, J: c}, simultaneous=True).xreplace(m)
+                    )
+                )
+                assert np.isclose(got, u.value[r, c])
+
+    def test_rank_mismatch_refused(self):
+        u = Pair.array("u", np.zeros((3, 4)))
+        v = Pair.array("v", np.arange(3.0))
+        with pytest.raises(NotImplementedError):
+            u[:, 1:2] = v
+
+
+class TestSliceWriteFormulas:
+    def test_slice_write_evaluates_per_element(self):
+        base = np.arange(8.0)
+        d = Pair.array("d", base.copy())
+        out = np.zeros_like(d)
+        out[1:-1] = d[2:] - d[:-2]
+        out[0] = 7.0
+        DD = sympy.IndexedBase("d")
+        m = {DD[k]: sympy.Float(v) for k, v in enumerate(base)}
+        for k in range(8):
+            got = float(sympy.N(out.formula.subs(I, k).xreplace(m)))
+            assert np.isclose(got, out.value[k])
+
+
 class TestAliasing:
     def test_slices_are_value_semantic(self):
         u = Pair.array("u", np.arange(6.0))

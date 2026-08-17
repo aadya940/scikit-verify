@@ -83,3 +83,26 @@ class TestCentered:
     def test_no_letters_unknown(self):
         x = Pair(3.0, sympy.Symbol("x"))
         assert checks.centered(x).verdict == checks.UNKNOWN
+
+
+class TestChecksOnRealKernels:
+    def test_kdv_bad_derivative_refuted_end_to_end(self):
+        u = Pair.array("u", np.cosh(np.linspace(-3, 3, 12)) ** -2)
+        good_ux = (u[2:] - u[:-2])
+        bad_ux = (u[3:] - u[1:-2])
+        assert checks.centered(good_ux, at=1).verdict == checks.PROVEN
+        assert checks.centered(bad_ux, at=1).verdict == checks.REFUTED
+
+    def test_markov_2d_walk_conserves_interior(self):
+        def walk_step(p, left, right, up, down):
+            stay = 1.0 - left - right - up - down
+            return (
+                stay * p[1:-1, 1:-1]
+                + right * p[1:-1, :-2]
+                + left * p[1:-1, 2:]
+                + down * p[:-2, 1:-1]
+                + up * p[2:, 1:-1]
+            )
+
+        out = to_sympy(walk_step, np.full((6, 6), 1 / 36), 0.1, 0.1, 0.1, 0.1)
+        assert checks.conserves_mass(out).verdict == checks.PROVEN

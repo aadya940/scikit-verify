@@ -130,8 +130,22 @@ OPS_2D = st.sampled_from(
         ("sum_axis1", lambda u, k: np.sum(u, axis=1)),
         ("sum_full", lambda u, k: np.sum(u)),
         ("where", lambda u, k: np.where(u > 0.0, u, 0.0 * u)),
+        ("write_row", lambda u, k: _row_written(u, k)),
+        ("write_block", lambda u, k: _block_written(u, k)),
     ]
 )
+
+
+def _row_written(u, k):
+    r = u * 1.0
+    r[k, :] = 0.25
+    return r
+
+
+def _block_written(u, k):
+    r = u * 1.0
+    r[k:, 1:] = u[k:, 1:] * 2.0
+    return r
 
 
 @settings(max_examples=200, deadline=None)

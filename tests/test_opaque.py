@@ -72,3 +72,38 @@ class TestOpaqueCalls:
         u = Pair.array("u", np.array([1.0, 4.0]))
         with pytest.raises(NotImplementedError):
             np.frexp(u)
+
+
+class TestContractChecks:
+    def test_eigh_symmetric_ok(self):
+        from skverify.contracts import check_call
+
+        A0 = np.array([[2.0, 1.0], [1.0, 2.0]])
+        name, verdicts = check_call("eigh", (A0, None), None)
+        assert dict(verdicts)["symmetric"] == "ok"
+
+    def test_eigh_asymmetric_failed(self):
+        from skverify.contracts import check_call
+
+        A0 = np.array([[2.0, 1.0], [0.0, 2.0]])
+        name, verdicts = check_call("eigh", (A0, None), None)
+        assert dict(verdicts)["symmetric"] == "failed"
+
+    def test_solve_residual_failed_on_wrong_result(self):
+        from skverify.contracts import check_call
+
+        A0 = np.array([[4.0, 1.0], [1.0, 3.0]])
+        b0 = np.array([1.0, 2.0])
+        wrong = np.array([9.0, 9.0])
+        name, verdicts = check_call("solve", (A0, b0), wrong)
+        assert dict(verdicts)["residual"] == "failed"
+
+    def test_mutation_guard_fires(self):
+        u = Pair.array("u", np.arange(4.0))
+
+        def mutator(x):
+            x[0] = -1.0
+            return np.array([0.0])
+
+        with pytest.raises(NotImplementedError):
+            Pair._opaque_call(mutator, (u,), {})

@@ -186,3 +186,28 @@ class TestWrappedFallback:
         u = make()
         r = np.median(u)
         assert float(r.value) == np.median(u.value)
+
+
+class TestArrayCoercionEdges:
+    def test_object_dtype_decompression(self):
+        u = make()
+        obj = np.asarray(u)
+        assert obj.dtype == np.dtype(object)
+        assert obj.shape == (4,)
+        assert all(isinstance(e, Pair) for e in obj)
+
+    def test_forced_dtype_refused(self):
+        u = make()
+        with pytest.raises(NotImplementedError):
+            np.asarray(u, dtype=float)
+
+    def test_unroll_cap_refused(self):
+        big = Pair.array("b", np.zeros(5000))
+        with pytest.raises(NotImplementedError):
+            np.asarray(big)
+
+    def test_scalar_pair_coerces_to_0d(self):
+        x = Pair(3.0, sympy.Symbol("x"))
+        obj = np.asarray(x)
+        assert obj.shape == ()
+        assert isinstance(obj[()], Pair)
