@@ -81,11 +81,13 @@ class TestBranchCapture:
 
 
 class TestGuardedLibraryCode:
-    def test_polyval_advances_to_float_exit(self):
-        # guards carried polyval PAST its comparisons; it now dies loudly
-        # at a float() coercion deeper in the body (tracker: next address)
-        with pytest.raises(NotImplementedError):
-            to_sympy(np.polyval, np.array([2.0, 3.0, 5.0]), np.arange(4.0))
+    def test_polyval_lifts_horner_elementwise(self):
+        out = to_sympy(np.polyval, np.array([2.0, 3.0, 5.0]), np.arange(4.0))
+        assert np.allclose(
+            out.value, np.polyval([2.0, 3.0, 5.0], np.arange(4.0))
+        )
+        P = sympy.IndexedBase("p")
+        assert out.formula.has(P[0]) and out.formula.has(P[2])
 
     def test_searchsorted_constant_under_path(self):
         # a guarded C bisection returns a plain int: wrapped as a CONSTANT

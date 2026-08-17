@@ -123,14 +123,13 @@ def _entries():
         "np.mean": lambda: to_sympy(np.mean, np.arange(5.0)),
         "np.var": lambda: to_sympy(np.var, np.arange(5.0)),
         "np.std": lambda: to_sympy(np.std, np.arange(5.0)),
-        # trackers: expected to DIE until the named feature lands
-        "np.gradient [tracker: guards/coercion]": lambda: to_sympy(
+        "np.gradient": lambda: to_sympy(
             np.gradient, 4 * np.linspace(0, 20, 8)
         ),
-        "np.polyval [tracker: guards]": lambda: to_sympy(
+        "np.polyval": lambda: to_sympy(
             np.polyval, np.array([2.0, 3.0, 5.0]), np.arange(4.0)
         ),
-        "np.median [tracker: guards]": lambda: to_sympy(np.median, np.arange(5.0)),
+        "np.median": lambda: to_sympy(np.median, np.arange(5.0)),
         "np.linalg.solve (opaque + contract)": lambda: to_sympy(
             lambda A, b: np.linalg.solve(A, b),
             np.array([[4.0, 1.0], [1.0, 3.0]]),

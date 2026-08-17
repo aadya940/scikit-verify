@@ -48,6 +48,17 @@ class Pair:
         if isinstance(x, Pair):
             return x.formula
         if isinstance(x, np.ndarray):
+            if x.dtype == object:
+                elems = x.ravel()
+                if all(isinstance(e, Pair) for e in elems):
+                    from .api import _recompress
+
+                    rule = _recompress([e.formula for e in elems])
+                    if rule is not None:
+                        return rule
+                    raise NotImplementedError(
+                        "decompressed operand without a provable pattern"
+                    )
             vals = np.unique(x)
             if len(vals) == 1:  # uniform: zeros, ones, full
                 return sympy.sympify(vals.item())  # constant field, clean
@@ -105,7 +116,15 @@ class Pair:
 
     @staticmethod
     def _value_of(x):
-        return x.value if isinstance(x, Pair) else x
+        if isinstance(x, Pair):
+            return x.value
+        if isinstance(x, np.ndarray) and x.dtype == object:
+            elems = x.ravel()
+            if all(isinstance(e, Pair) for e in elems):
+                return np.array([e.value for e in elems], dtype=float).reshape(
+                    x.shape
+                )
+        return x
 
     @staticmethod
     def _shift_axes(formula, bounds, ndim):
@@ -366,8 +385,31 @@ class Pair:
             "for masks use .all()/.any(), for combining use & | ~"
         )
 
-    # bare-number conversions discard the formula: the value keeps computing
-    # but the trace silently dies. Use .value for a deliberate exit.
+    def __array__(self, dtype=None, copy=None):
+        """Coercion is deliberate decompression: an indexed Pair becomes an
+        object array of per-element scalar Pairs, so the trace survives
+        element by element. Forced numeric dtypes would discard formulas."""
+        if dtype is not None and np.dtype(dtype) != object:
+            raise NotImplementedError(
+                f"coercion to dtype={dtype} would discard the formula"
+            )
+        if self._axis_bounds is None:
+            out = np.empty((), dtype=object)
+            out[()] = self
+            return out
+        shape = tuple(hi - lo for lo, hi in self._axis_bounds)
+        n = int(np.prod(shape))
+        if n > 4096:
+            raise NotImplementedError(
+                f"coercion would unroll {n} elements; the indexed form is lost"
+            )
+        out = np.empty(shape, dtype=object)
+        for idx in np.ndindex(shape):
+            out[idx] = self[idx if len(idx) > 1 else idx[0]]
+        return out
+
+    # bare-number conversions discard the formula: the trace silently dies
+    # otherwise. Use .value for a deliberate exit.
     def __float__(self):
         raise NotImplementedError(
             "float() on a traced value discards the formula; use .value"

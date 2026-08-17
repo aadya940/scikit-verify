@@ -118,8 +118,15 @@ def _fresh_dummy(formula, n_axes, base="j"):
 def _sum(a, axis=None, **kwargs):
     if kwargs:
         raise NotImplementedError(f"np.sum kwargs {list(kwargs)} not supported")
-    if not isinstance(a, Pair) or a.domain is None:
-        return np.sum(a)  # plain input, not ours
+    if isinstance(a, Pair) and a.domain is None:
+        return a  # the sum of a scalar is itself
+    if not isinstance(a, Pair):
+        if isinstance(a, np.ndarray) and a.dtype == object:
+            total = a.ravel()[0]
+            for e in a.ravel()[1:]:
+                total = total + e  # element dunders keep the trace
+            return total
+        return np.sum(np.asarray(a))
 
     a = Pair(
         a.value, Pair._bridge_numeric(a.formula), a._axis_bounds, steps=a.steps
@@ -188,6 +195,33 @@ def _full_like(a, fill_value, **kwargs):
     )
 
 
+def _empty_like(a, dtype=None, **kwargs):
+    bounds = Pair._domain_of(a)
+    letters = tuple(axis_idx(ax) for ax in range(len(bounds)))
+    return Pair(
+        np.empty(tuple(hi - lo for lo, hi in bounds)),
+        sympy.Function("uninitialized")(*letters),
+        bounds,
+    )
+
+
+def _gradient(f, *varargs, axis=None, edge_order=1):
+    if not isinstance(f, Pair) or len(f._axis_bounds) != 1:
+        raise NotImplementedError("gradient: 1-D traced input only")
+    if axis not in (None, 0, -1) or edge_order != 1:
+        raise NotImplementedError("gradient: axis/edge_order not supported")
+    if len(varargs) > 1 or (varargs and not np.isscalar(Pair._value_of(varargs[0]))):
+        raise NotImplementedError("gradient: uniform scalar spacing only")
+    dx = varargs[0] if varargs else 1.0
+    out = np.zeros_like(f)
+    out[1:-1] = (f[2:] - f[:-2]) / (2.0 * dx)
+    out[0] = (f[1] - f[0]) / dx
+    out[-1] = (f[-1] - f[-2]) / dx
+    return out
+
+
+FUNCTION_TABLE[np.gradient] = _gradient
+FUNCTION_TABLE[np.empty_like] = _empty_like
 FUNCTION_TABLE[np.zeros_like] = _zeros_like
 FUNCTION_TABLE[np.ones_like] = _ones_like
 FUNCTION_TABLE[np.full_like] = _full_like

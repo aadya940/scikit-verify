@@ -164,6 +164,22 @@ class TestWrappedFallback:
         assert r[0].formula == sympy.log(U[0])
         assert float(r[0].value) == np.log(u.value[0])
 
+    def test_gradient_lifts_with_boundaries(self):
+        from skverify import to_sympy
+
+        x = 4 * np.linspace(0, 20, 8)
+        r = to_sympy(np.gradient, x)
+        assert np.allclose(r.value, np.gradient(x))
+        assert r.formula.has(sympy.Piecewise)
+
+    def test_hmean_lifts_through_coercion(self):
+        from skverify import to_sympy
+        from scipy.stats import hmean
+
+        x = np.linspace(1, 2, 6)
+        r = to_sympy(hmean, x)
+        assert np.isclose(float(r.value), hmean(x))
+
     def test_median_traces_through_guarded_sort(self):
         # median's body compares and branches; guards record each branch
         # and the concrete lane keeps it running
