@@ -131,6 +131,11 @@ def _entries():
             np.polyval, np.array([2.0, 3.0, 5.0]), np.arange(4.0)
         ),
         "np.median [tracker: guards]": lambda: to_sympy(np.median, np.arange(5.0)),
+        "np.linalg.solve (opaque + contract)": lambda: to_sympy(
+            lambda A, b: np.linalg.solve(A, b),
+            np.array([[4.0, 1.0], [1.0, 3.0]]),
+            np.array([1.0, 2.0]),
+        ),
         "np.clip": lambda: to_sympy(
             np.clip, np.linspace(-1, 1, 6), 0.0, 0.5
         ),
@@ -145,7 +150,11 @@ def main():
             f = getattr(r, "formula", r)
             p = getattr(r, "preconditions", r)
             print(f"LIFTS  {name}\n       {str(f)[:100]}")
-            print(f"PRECONDITIONS: {p}\n")
+            print(f"PRECONDITIONS: {p}")
+            unchecked = getattr(r, "unchecked", ())
+            if unchecked:
+                print(f"UNCHECKED: {unchecked}")
+            print()
             lifted += 1
         except Exception as e:
             print(f"DIES   {name}\n       {type(e).__name__}: {str(e)[:80]}")
