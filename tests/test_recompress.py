@@ -102,6 +102,45 @@ class TestCumulativeFold:
         assert a.domain == (0, 4) and b.domain == (0, 8)
 
 
+class TestPolyFold:
+    def test_horner_loop_folds_to_polynomial(self):
+        def horner(c, x):
+            s = 0.0
+            for k in range(len(c)):
+                s = s * x + c[k]
+            return s
+
+        r = to_sympy(horner, np.array([2.0, 3.0, 5.0, 1.0]), 1.5)
+        C = sympy.IndexedBase("c")
+        X = sympy.Symbol("x", real=True)
+        JD = sympy.Symbol("j", integer=True)
+        assert r.formula == sympy.Sum(C[JD] * X ** (3 - JD), (JD, 0, 3))
+        m = {C[k]: sympy.Float(v) for k, v in enumerate([2.0, 3.0, 5.0, 1.0])}
+        m[X] = sympy.Float(1.5)
+        assert np.isclose(float(sympy.N(r.formula.doit().xreplace(m))), r.value)
+
+    def test_ema_recurrence_stays_nested(self):
+        def ema(x, a):
+            s = 0.0
+            for k in range(len(x)):
+                s = a * s + (1 - a) * x[k]
+            return s
+
+        r = to_sympy(ema, np.arange(4.0), 0.5)
+        A = sympy.Symbol("a", real=True)
+        X = sympy.IndexedBase("x")
+        m = {X[k]: sympy.Float(v) for k, v in enumerate(np.arange(4.0))}
+        m[A] = sympy.Float(0.5)
+        assert np.isclose(float(sympy.N(r.formula.doit().xreplace(m))), r.value)
+
+    def test_mixed_bases_refuse(self):
+        from skverify.api import _fold_poly
+
+        C, D = sympy.IndexedBase("c"), sympy.IndexedBase("d")
+        X = sympy.Symbol("x")
+        assert _fold_poly((C[0] * X + D[1]) * X + C[2]) is None
+
+
 class TestFoldRefusals:
     def test_truly_irregular_elements_refuse(self):
         # neither shifted copies nor a shiftable difference

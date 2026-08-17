@@ -60,6 +60,13 @@ def mask_count(x):
     return np.sum(x > 0)
 
 
+def horner(c, x):
+    s = 0.0
+    for k in range(len(c)):
+        s = s * x + c[k]
+    return s
+
+
 def heat_step(u, r):
     dudt = np.zeros_like(u)
     dudt[1:-1] = u[2:] - 2 * u[1:-1] + u[:-2]
@@ -92,6 +99,7 @@ def _entries():
         "sigmoid": lambda: to_sympy(sigmoid, np.linspace(-1, 1, 6)),
         "two-pass variance": lambda: to_sympy(two_pass_variance, np.arange(6.0), 6),
         "mask count": lambda: to_sympy(mask_count, np.linspace(-1, 1, 6)),
+        "horner loop": lambda: to_sympy(horner, np.array([2.0, 3.0, 5.0]), 1.5),
         "heat step (build-then-fill)": lambda: to_sympy(
             heat_step, np.linspace(0, 1, 8) ** 2, 0.1
         ),

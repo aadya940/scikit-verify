@@ -44,8 +44,14 @@ def _repack(out):
     into a single Pair: values as a real ndarray, formulas as a sympy.Array.
     """
     if isinstance(out, Pair):
-        if out.domain is None and isinstance(out.formula, sympy.Add):
-            folded = _fold_add(out.formula)
+        if out.domain is None and isinstance(out.formula, (sympy.Add, sympy.Mul)):
+            folded = _fold_poly(out.formula)
+            if folded is None and isinstance(out.formula, sympy.Add):
+                folded = _fold_add(out.formula)
+            if folded is None:
+                expanded = sympy.expand(out.formula)
+                if isinstance(expanded, sympy.Add):
+                    folded = _fold_add(expanded)
             if folded is not None:
                 return Pair(out.value, folded, None)
         return out
@@ -78,6 +84,47 @@ def _shift_indices(expr, offset):
         lambda x: isinstance(x, sympy.Indexed),
         lambda x: x.base[tuple(e + offset for e in x.indices)],
     )
+
+
+def _fold_poly(expr):
+    """Horner nests fold through their polynomial coefficients.
+
+    ((c[0]*x + c[1])*x + c[2])  ->  Sum(c[j]*x**(2 - j), (j, 0, 2))
+
+    Proven, not guessed: sympy.Poly extracts the coefficient list and the
+    fold happens only if it is exactly c[0], c[1], ..., c[n-1] of one base.
+    """
+    from .helpers import _AXIS_SYMBOLS
+
+    indexed = list(expr.atoms(sympy.Indexed))
+    if not indexed:
+        return None
+    bases = {a.base for a in indexed}
+    if len(bases) != 1:
+        return None
+    base = bases.pop()
+    labels = {sympy.Symbol(str(b.base)) for b in indexed}
+    xs = [
+        s
+        for s in expr.free_symbols
+        if isinstance(s, sympy.Symbol)
+        and s not in _AXIS_SYMBOLS
+        and s not in labels
+    ]
+    if len(xs) != 1:
+        return None
+    x = xs[0]
+    try:
+        coeffs = sympy.Poly(expr, x).all_coeffs()
+    except sympy.PolynomialError:
+        return None
+    n = len(coeffs)
+    if n < 3:
+        return None
+    if any(coeffs[k] != base[k] for k in range(n)):
+        return None
+    j = sympy.Symbol("j", integer=True)
+    return sympy.Sum(base[j] * x ** (n - 1 - j), (j, 0, n - 1))
 
 
 def _fold_add(expr):
