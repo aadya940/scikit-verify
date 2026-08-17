@@ -576,11 +576,16 @@ class Pair:
                 f"{func.__name__} mutated a traced input in place"
             )
         formulas = []
+        n_const = 0
         for a in args:
             if isinstance(a, Pair):
                 formulas.append(a.formula)
             elif np.isscalar(a):
                 formulas.append(sympy.sympify(a))
+            elif isinstance(a, np.ndarray):
+                # a concrete operand: named, so the formula never hides it
+                formulas.append(sympy.Symbol(f"const{n_const}"))
+                n_const += 1
         formula = sympy.Function(func.__name__)(*formulas)
         _OPAQUE.append(check_call(func.__name__, values, result))
         domain = (
