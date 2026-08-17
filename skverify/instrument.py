@@ -150,8 +150,32 @@ def instrument(fn, depth=3):
 
 def _instrument(fn, depth, seen):
     source = textwrap.dedent(inspect.getsource(fn))
-    tree = ast.parse(source)
-    fdef = tree.body[0]
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        # getsource of a lambda inside a larger expression can return a
+        # fragment; grab the lambda subexpression instead
+        tree = None
+    if tree is None or not isinstance(tree.body[0], (ast.FunctionDef,)):
+        lam = None
+        if tree is not None:
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Lambda):
+                    lam = node
+                    break
+        if lam is None:
+            raise TypeError("no function definition found in source")
+        fdef = ast.FunctionDef(
+            name="__skv_lambda__",
+            args=lam.args,
+            body=[ast.Return(value=lam.body)],
+            decorator_list=[],
+            type_params=[],
+        )
+        tree = ast.Module(body=[fdef], type_ignores=[])
+        ast.fix_missing_locations(tree)
+    else:
+        fdef = tree.body[0]
     if fdef.decorator_list:
         # transparent decorators (metadata-only, returned the original
         # function: no closure, no __wrapped__) are safe to strip; a
