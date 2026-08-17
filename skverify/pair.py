@@ -212,11 +212,73 @@ class Pair:
             else:
                 # u[2] : u[i, j] -> u[2, i], row axis gone, survivor renamed
                 index_map[sym] = sympy.Integer(entry)
+        value = self.value[key]
+        if isinstance(value, np.ndarray):
+            value = value.copy()  # slices are value-semantic: no view aliasing
         return self._remap(
-            value=self.value[key],  # raw key: numpy interprets it independently
+            value=value,  # raw key: numpy interprets it independently
             index_map=index_map,
             axis_bounds=tuple(new_bounds),  # u[2, 3] -> (), remap makes it scalar
         )
+
+    def __setitem__(self, key, val):
+        # u[2:5] = v: the formula becomes a scatter, old rule outside the
+        # written region, the value's rule (re-indexed) inside it
+        if self._axis_bounds is None:
+            raise TypeError("scalar Pair does not support item assignment")
+        val_formula = Pair._formula_of(val)
+        if isinstance(key, Pair):
+            if Pair._is_condition(key.formula):
+                if isinstance(val, (Pair, np.ndarray)) and np.ndim(
+                    Pair._value_of(val)
+                ):
+                    raise NotImplementedError(
+                        "masked assignment with an array value is data-dependent"
+                    )
+                self.value[key.value] = Pair._value_of(val)
+                self.formula = sympy.Piecewise(
+                    (val_formula, key.formula), (self.formula, True)
+                )
+                self.steps = Pair._steps_of(self, key, val) + [self.formula]
+                return
+            raise NotImplementedError("only boolean Pair keys are supported")
+
+        lengths = tuple(hi - lo for lo, hi in self._axis_bounds)
+        entries = normalize_key(key, lengths)
+        condition = []
+        val_map = {}
+        val_rank = 0
+        for ax, entry in enumerate(entries):
+            sym = axis_idx(ax)
+            if isinstance(entry, tuple):
+                start, stop, step = entry
+                if step != 1:
+                    raise NotImplementedError(
+                        "strided assignment not supported yet"
+                    )
+                if not (start == 0 and stop == lengths[ax]):
+                    condition.append(sympy.Ge(sym, start))
+                    condition.append(sympy.Lt(sym, stop))
+                val_map[axis_idx(val_rank)] = sym - start
+                val_rank += 1
+            else:
+                condition.append(sympy.Eq(sym, entry))
+        if isinstance(val, Pair) and val._axis_bounds is not None:
+            if len(val._axis_bounds) != val_rank:
+                raise NotImplementedError(
+                    "assigned value rank must match the sliced region"
+                )
+            val_formula = val_formula.subs(
+                {k: v for k, v in val_map.items()}, simultaneous=True
+            )
+        self.value[key] = Pair._value_of(val)
+        if condition:
+            self.formula = sympy.Piecewise(
+                (val_formula, sympy.And(*condition)), (self.formula, True)
+            )
+        else:
+            self.formula = val_formula
+        self.steps = Pair._steps_of(self, val) + [self.formula]
 
     def transpose(self, axes=None):
         # u (4x7), u.T: u[i, j] -> u[j, i], bounds ((0,4),(0,7)) -> ((0,7),(0,4))

@@ -60,6 +60,13 @@ def mask_count(x):
     return np.sum(x > 0)
 
 
+def heat_step(u, r):
+    dudt = np.zeros_like(u)
+    dudt[1:-1] = u[2:] - 2 * u[1:-1] + u[:-2]
+    dudt[0] = 0.0
+    return u + r * dudt
+
+
 def _entries():
     from scipy.integrate import cumulative_trapezoid, simpson, trapezoid
     from scipy.stats import gmean, hmean
@@ -85,6 +92,9 @@ def _entries():
         "sigmoid": lambda: to_sympy(sigmoid, np.linspace(-1, 1, 6)),
         "two-pass variance": lambda: to_sympy(two_pass_variance, np.arange(6.0), 6),
         "mask count": lambda: to_sympy(mask_count, np.linspace(-1, 1, 6)),
+        "heat step (build-then-fill)": lambda: to_sympy(
+            heat_step, np.linspace(0, 1, 8) ** 2, 0.1
+        ),
         # scipy, unmodified
         "scipy trapezoid": lambda: to_sympy(lambda y: trapezoid(y, dx=0.1), y8),
         "scipy simpson": lambda: to_sympy(lambda y: simpson(y, dx=0.125), y9),
@@ -113,7 +123,7 @@ def _entries():
             np.polyval, np.array([2.0, 3.0, 5.0]), np.arange(4.0)
         ),
         "np.median [tracker: guards]": lambda: to_sympy(np.median, np.arange(5.0)),
-        "np.clip [tracker: table entry]": lambda: to_sympy(
+        "np.clip": lambda: to_sympy(
             np.clip, np.linspace(-1, 1, 6), 0.0, 0.5
         ),
     }
