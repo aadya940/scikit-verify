@@ -31,9 +31,9 @@ def test_make_smoothing_spline_lifts():
     X = sympy.IndexedBase("x")
     assert spl.c[0].formula.has(X[0])  # symbolic in the knots
 
-    names = [entry[0] for entry in _OPAQUE]
-    assert "design_matrix" in names
-    assert "solve_banded" in names
+    records = {entry[0]: dict(entry[1]) for entry in _OPAQUE}
+    assert records["design_matrix"]["residual"] == "ok"  # matches sympy's basis
+    assert records["solve_banded"]["residual"] == "ok"  # A @ x == b, this run
 
     assert any(g.has(X[0]) for g in _GUARDS)  # ascending-x validation recorded
 
