@@ -189,6 +189,29 @@ def _skv_opaque_out(fn, out_idxs, transposed, *args, **kwargs):
     return outs[0] if len(outs) == 1 else tuple(outs)
 
 
+def _skv_maybe(fn):
+    """Pass Python functions, methods, classes, ufuncs and builtins
+    through; wrap anything COMPILED so traced arguments turn the call
+    into an opaque atom instead of a crash."""
+    if (
+        inspect.isfunction(fn)
+        or inspect.ismethod(fn)
+        or isinstance(fn, (type, np.ufunc))
+        or getattr(fn, "__module__", None) == "builtins"
+        or hasattr(fn, "__wrapped__")  # numpy dispatchers: the protocol handles them
+    ):
+        return fn
+
+    def wrapper(*args, **kwargs):
+        if any(_traced(a) for a in args) or any(
+            _traced(v) for v in kwargs.values()
+        ):
+            return Pair._opaque_call(fn, args, kwargs)
+        return fn(*args, **kwargs)
+
+    return wrapper
+
+
 def _traced(a):
     return isinstance(a, Pair) or (
         isinstance(a, np.ndarray)
@@ -212,6 +235,7 @@ class _Rewriter(ast.NodeTransformer):
         self.tag = tag
         self.sites = []
         self.callees = set()
+        self.wrapped = 0
 
     def _tag_loop(self, node):
         self.generic_visit(node)
@@ -262,8 +286,9 @@ class _Rewriter(ast.NodeTransformer):
                     targets.append(base.id)
                     flags.append(transposed)
             if ok:
-                self.generic_visit(node)
-                args = list(call.args)
+                # visit args only: generic_visit would let the doorman
+                # wrap the callee and rename the atom to 'wrapper'
+                args = [self.visit(a) for a in call.args]
                 for idx, tid in zip(idxs, targets):
                     args[idx] = ast.Name(id=tid, ctx=ast.Load())
                 self.sites.append(f"{name} -> opaque out-parameter call")
@@ -355,6 +380,23 @@ class _Rewriter(ast.NodeTransformer):
             )
         elif isinstance(node.func, ast.Name):
             self.callees.add(node.func.id)
+            node = self._maybe_opaque(node)
+        elif isinstance(node.func, ast.Attribute):
+            node = self._maybe_opaque(node)
+        return node
+
+    def _maybe_opaque(self, node):
+        # the doorman: unregistered COMPILED callables auto-seal into
+        # opaque atoms at runtime; Python functions, ufuncs, builtins
+        # and classes pass through untouched
+        if isinstance(node.func, ast.Name) and node.func.id.startswith("__skv"):
+            return node
+        self.wrapped += 1
+        node.func = ast.Call(
+            func=ast.Name(id="__skv_maybe__", ctx=ast.Load()),
+            args=[node.func],
+            keywords=[],
+        )
         return node
 
 
@@ -417,6 +459,7 @@ def _instrument(fn, depth, seen):
     namespace["__skv_neutral__"] = _skv_neutral
     namespace["__skv_opaque__"] = _skv_opaque
     namespace["__skv_method__"] = _skv_method
+    namespace["__skv_maybe__"] = _skv_maybe
     namespace["__skv_concrete__"] = _skv_concrete
     namespace["__skv_scalarize__"] = _skv_scalarize
     namespace["__skv_concrete_call__"] = _skv_concrete_call
@@ -425,6 +468,8 @@ def _instrument(fn, depth, seen):
     namespace["__skv_loop_end__"] = _loop_end
 
     sites = list(rewriter.sites)
+    if rewriter.wrapped and not sites:
+        sites.append(f"auto-opaque guard on {rewriter.wrapped} calls")
     if depth > 0:
         for name in rewriter.callees:
             callee = fn.__globals__.get(name)

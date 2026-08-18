@@ -1222,7 +1222,11 @@ class Pair:
             np.array(v, copy=True) if isinstance(v, np.ndarray) else v
             for v in (Pair._value_of(a) for a in args)
         ]
-        result = func(*values, **kwargs)
+        kwvalues = {
+            k: (np.array(v, copy=True) if isinstance(v, np.ndarray) else v)
+            for k, v in ((k, Pair._value_of(v)) for k, v in kwargs.items())
+        }
+        result = func(*values, **kwvalues)
         after = [
             np.asarray(a.value).tobytes()
             for a in pair_args
