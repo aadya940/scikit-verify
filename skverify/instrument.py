@@ -226,6 +226,20 @@ def _skv_opaque_out(fn, out_idxs, transposed, *args, **kwargs):
     return outs[0] if len(outs) == 1 else tuple(outs)
 
 
+def runtime_twin(fn):
+    """Memoized instrumented copy of a plain function, or the original
+    when instrumentation finds nothing to rewrite."""
+    if fn in _FN_MEMO:
+        sub, sites = _FN_MEMO[fn]
+        return sub if sites else fn
+    try:
+        sub, sites = _instrument(fn, 0, set())
+    except (OSError, TypeError, SyntaxError, KeyError, AttributeError):
+        sub, sites = fn, ()
+    _FN_MEMO[fn] = (sub, sites)
+    return sub if sites else fn
+
+
 def _skv_maybe(fn):
     """Pass Python functions, methods, classes, ufuncs and builtins
     through; wrap anything COMPILED so traced arguments turn the call

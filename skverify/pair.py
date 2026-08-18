@@ -594,6 +594,19 @@ class Pair:
         return fwd(a, b) if a is self else rev(b, a)
 
     @staticmethod
+    def _numeric(v, copy=True):
+        """Object-dtype numeric arrays coerce to float (the dtype duck
+        leaks into allocations); anything else passes through."""
+        if isinstance(v, np.ndarray):
+            if v.dtype == object:
+                try:
+                    return np.asarray(v, dtype=float)
+                except (TypeError, ValueError):
+                    pass
+            return np.array(v, copy=True) if copy else v
+        return v
+
+    @staticmethod
     def _value_of(x):
         if isinstance(x, Pair):
             return x.value
@@ -1440,7 +1453,7 @@ class Pair:
                 )
             return Pair._opaque_call(ufunc, inputs, kwargs)
 
-        values = [Pair._value_of(x) for x in inputs]
+        values = [Pair._numeric(Pair._value_of(x), copy=False) for x in inputs]
         domain = Pair._merge_domains(*(Pair._domain_of(x) for x in inputs))
         formulas = [
             Pair._shift_axes(
@@ -1474,17 +1487,7 @@ class Pair:
         # the routine gets COPIES: overwrite_ab-style scribbling stays
         # off the traced values, and the snapshot guard keeps everyone
         # honest about it
-        def _numeric(v):
-            if isinstance(v, np.ndarray):
-                if v.dtype == object:
-                    try:  # our dtype duck leaks into allocations
-                        return np.asarray(v, dtype=float)
-                    except (TypeError, ValueError):
-                        return np.array(v, copy=True)
-                return np.array(v, copy=True)
-            return v
-
-        values = [_numeric(Pair._value_of(a)) for a in args]
+        values = [Pair._numeric(Pair._value_of(a)) for a in args]
         kwvalues = {
             k: (np.array(v, copy=True) if isinstance(v, np.ndarray) else v)
             for k, v in ((k, Pair._value_of(v)) for k, v in kwargs.items())
@@ -1567,8 +1570,18 @@ class Pair:
         inner = getattr(func, "__wrapped__", None)
         if inner is not None:
             # pure-Python numpy: run its real body on the Pairs; slices and
-            # arithmetic inside dispatch back here, formulas unrolled per element
-            return inner(*args, **kwargs)
+            # arithmetic inside dispatch back here, formulas unrolled per
+            # element. A body that walls (finfo on the object dtype, type
+            # gates) retries as an instrumented twin carrying the rewrites
+            try:
+                return inner(*args, **kwargs)
+            except (TypeError, ValueError, AttributeError, NotImplementedError):
+                from .instrument import runtime_twin
+
+                twin = runtime_twin(inner)
+                if twin is inner:
+                    raise
+                return twin(*args, **kwargs)
         return Pair._opaque_call(func, args, kwargs)
 
 
