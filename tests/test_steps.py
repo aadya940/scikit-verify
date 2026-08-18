@@ -134,3 +134,51 @@ class TestCseSteps:
         text = u.derivation()
         assert text.splitlines()[-1].startswith("result: ")
         assert "Piecewise" in text
+
+
+class TestStepFold:
+    def _scatter(self, n=8):
+        u = Pair.array("u", np.zeros(n))
+        v = np.exp(Pair.array("v", np.arange(float(n))))
+        for m in range(1, n - 1):
+            u[m] = v[m]
+        return u
+
+    def test_run_folds_to_one_rule_line(self):
+        u = self._scatter()
+        body = [
+            l for l in u.derivation().splitlines() if l.startswith("steps ")
+        ]
+        assert len(body) == 1  # 6 writes, one rule line
+
+    def test_expansion_reproduces_steps_exactly(self):
+        # the completeness guarantee: rules are notation, not truncation
+        from skverify.pair import _delta_steps, _fold_runs, _fresh_name, _PREV
+
+        u = self._scatter()
+        steps = u.steps
+        deltas = _delta_steps(steps)
+        k = _fresh_name("n", deltas)
+        rebuilt = []
+        for templates, start, blocks in _fold_runs(deltas, k):
+            for r in range(blocks):
+                for t in templates:
+                    d = t.subs(k, r) if blocks > 1 else t
+                    for depth, sym in enumerate(_PREV, start=1):
+                        if d.has(sym):
+                            d = d.xreplace({sym: rebuilt[-depth]})
+                    rebuilt.append(d)
+        assert rebuilt == steps
+
+    def test_no_false_folds(self):
+        # structurally different steps must stay verbatim
+        u = Pair.array("u", np.arange(4.0))
+        r = np.sum(np.exp(u)) * 2.0 + np.sum(u)
+        assert not any(
+            l.startswith("steps ") for l in r.derivation().splitlines()
+        )
+
+    def test_derivation_size_tracks_structure_not_data(self):
+        small = len(self._scatter(8).derivation().splitlines())
+        large = len(self._scatter(64).derivation().splitlines())
+        assert large <= small + 2  # rule line absorbs the growth

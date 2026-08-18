@@ -17,6 +17,88 @@ _GUARDS = []  # branch conditions taken during a trace; harvested by to_sympy
 _OPAQUE = []  # opaque compiled calls made during a trace, with contract verdicts
 
 
+def _fresh_name(base, exprs):
+    taken = set()
+    for e in exprs:
+        taken |= {s.name for s in e.free_symbols}
+    name, c = base, 2
+    while name in taken:
+        name, c = f"{base}{c}", c + 1
+    return sympy.Symbol(name, integer=True)
+
+
+def _generalize(e1, e2, k):
+    """The template both expressions instantiate: equal parts kept,
+    Integers that differ become linear in k (k=0 gives e1, k=1 gives
+    e2). None when the trees differ in any non-Integer way."""
+    if e1 == e2:
+        return e1
+    if isinstance(e1, sympy.Integer) and isinstance(e2, sympy.Integer):
+        return e1 + k * (e2 - e1)
+    if e1.func is not e2.func or len(e1.args) != len(e2.args) or not e1.args:
+        return None
+    args = [_generalize(a, b, k) for a, b in zip(e1.args, e2.args)]
+    if any(a is None for a in args):
+        return None
+    return e1.func(*args)
+
+
+# prev, prev2, ... : a write's else-branch references the LAST write
+# of the same array, one whole loop body back, so the window must
+# cover the largest foldable period (covers simple loop bodies; nested-loop periods need the hierarchical pass, flagged)
+_PREV = tuple(
+    sympy.Symbol("prev" if d == 1 else f"prev{d}") for d in range(1, 33)
+)
+
+
+def _delta_steps(steps):
+    """Steps with their recent predecessors abstracted: an occurrence
+    of step m-1 reads `prev`, of m-2 `prev2` (a write references both
+    its value and the pre-write state)."""
+    deltas = []
+    for m, expr in enumerate(steps):
+        for d, sym in enumerate(_PREV, start=1):
+            if m - d >= 0 and not steps[m - d].is_Atom and expr.has(steps[m - d]):
+                expr = expr.xreplace({steps[m - d]: sym})
+        deltas.append(expr)
+    return deltas
+
+
+def _fold_runs(deltas, k, min_blocks=3, max_period=24):
+    """Consecutive expressions repeating as one block of templates
+    under k collapse to (templates, start, blocks); period-p blocks
+    cover alternating patterns (gather then write). Every member is
+    verified by exact subs equality before folding. Unfolded
+    expressions stay ((expr,), m, 1)."""
+    items, m = [], 0
+    n = len(deltas)
+    while m < n:
+        folded = False
+        for p in range(1, max_period + 1):
+            if m + 2 * p > n:
+                break
+            ts = [
+                _generalize(deltas[m + j], deltas[m + p + j], k) for j in range(p)
+            ]
+            if any(t is None for t in ts) or not any(t.has(k) for t in ts):
+                continue
+            blocks = 0
+            while m + (blocks + 1) * p <= n and all(
+                ts[j].subs(k, blocks) == deltas[m + blocks * p + j]
+                for j in range(p)
+            ):
+                blocks += 1
+            if blocks >= min_blocks:
+                items.append((tuple(ts), m, blocks))
+                m += blocks * p
+                folded = True
+                break
+        if not folded:
+            items.append(((deltas[m],), m, 1))
+            m += 1
+    return items
+
+
 class Pair:
     """Convert math and array style operations to SymPy
     expressions.
@@ -73,19 +155,43 @@ class Pair:
         return assignments, steps
 
     def derivation(self):
-        """Human-readable derivation: each shared subexpression assigned
-        once, then each step in execution order. Steps that reduce to a
-        bare name are dropped (their assignment line already shows them)."""
-        assignments, steps = self.cse_steps()
+        """Human-readable derivation, complete under expansion.
+
+        Steps referencing their predecessor show it as `prev`; runs of
+        consecutive steps that are one template under an integer index
+        fold to a single rule line, every member verified against the
+        template (exact subs equality) before folding. Shared
+        subexpressions are cse-named. Expanding rules and names back
+        reproduces .steps exactly."""
+        deltas = _delta_steps(self.steps)
+        k = _fresh_name("n", deltas)
+        items = _fold_runs(deltas, k)  # (templates, start, blocks)
+
+        flat = [t for ts, _, _ in items for t in ts]
+        assignments, reduced = sympy.cse(
+            flat, symbols=sympy.numbered_symbols("t"), order="none"
+        )
         named = {sym for sym, _ in assignments}
         lines = [f"{sym} = {expr}" for sym, expr in assignments]
-        last = None
-        for n, expr in enumerate(steps):
-            if expr in named or expr == last:
+        pos = 0
+        last_line = None
+        for ts, start, blocks in items:
+            body = reduced[pos : pos + len(ts)]
+            pos += len(ts)
+            if blocks > 1:
+                stop = start + blocks * len(ts) - 1
+                lines.append(f"steps {start}-{stop}, {k} = 0..{blocks - 1}:")
+                lines.extend(f"  {expr}" for expr in body)
+                last_line = None
                 continue
-            last = expr
-            marker = "result" if n == len(steps) - 1 else f"step {n}"
-            lines.append(f"{marker}: {expr}")
+            if body[0] in named or body[0] == last_line:
+                continue
+            last_line = body[0]
+            lines.append(f"step {start}: {body[0]}")
+        final = reduced[-1]
+        if items[-1][2] > 1:
+            final = final.subs(k, items[-1][2] - 1)
+        lines.append(f"result: {final}")
         return "\n".join(lines)
 
     @staticmethod
