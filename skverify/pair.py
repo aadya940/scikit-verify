@@ -62,6 +62,32 @@ class Pair:
                 stack.append((parent, False))
         return out
 
+    def cse_steps(self):
+        """The derivation with shared subexpressions named: a list of
+        (t_k, expression) assignments and the steps rewritten in terms
+        of them. Substituting the assignments back (in reverse order)
+        reproduces .steps exactly; nothing is simplified away."""
+        assignments, steps = sympy.cse(
+            self.steps, symbols=sympy.numbered_symbols("t"), order="none"
+        )
+        return assignments, steps
+
+    def derivation(self):
+        """Human-readable derivation: each shared subexpression assigned
+        once, then each step in execution order. Steps that reduce to a
+        bare name are dropped (their assignment line already shows them)."""
+        assignments, steps = self.cse_steps()
+        named = {sym for sym, _ in assignments}
+        lines = [f"{sym} = {expr}" for sym, expr in assignments]
+        last = None
+        for n, expr in enumerate(steps):
+            if expr in named or expr == last:
+                continue
+            last = expr
+            marker = "result" if n == len(steps) - 1 else f"step {n}"
+            lines.append(f"{marker}: {expr}")
+        return "\n".join(lines)
+
     @staticmethod
     def _steps_of(*operands):
         return tuple(x for x in operands if isinstance(x, Pair))

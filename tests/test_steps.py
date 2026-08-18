@@ -79,3 +79,58 @@ class TestSteps:
         w = np.where(u, np.exp(u), 0.0 * u)
         assert sympy.exp(U[I]) in w.steps
         assert w.steps[-1] == w.formula
+
+
+class TestCseSteps:
+    def _ols_slope(self):
+        x = Pair.array("x", np.arange(4.0))
+        y = Pair.array("y", np.arange(4.0) * 2.0)
+        sx, sy = np.sum(x), np.sum(y)
+        sxx, sxy = np.sum(x * x), np.sum(x * y)
+        return (4 * sxy - sx * sy) / (4 * sxx - sx * sx)
+
+    def test_substituting_back_is_exact(self):
+        # the workstream rule: the pretty view can never drift from truth
+        r = self._ols_slope()
+        assignments, steps = r.cse_steps()
+        for reduced, original in zip(steps, r.steps):
+            for sym, expr in reversed(assignments):
+                reduced = reduced.subs(sym, expr)
+            assert reduced == original
+
+    def test_shared_sum_named_once(self):
+        r = self._ols_slope()
+        assignments, _ = r.cse_steps()
+        text = " ; ".join(str(e) for _, e in assignments)
+        # Sum(x[j], ...) is used twice in the slope but assigned once
+        assert text.count("Sum(x[j], (j, 0, 3))") == 1
+
+    def test_bound_index_stays_inside_its_sum(self):
+        # cse must not hoist u[j]*v[j] (bound j) to a top-level name
+        u = Pair.array("u", np.arange(4.0))
+        v = Pair.array("v", np.arange(4.0))
+        r = np.sum(u * v) + np.sum(u * v) * 2.0
+        assignments, steps = r.cse_steps()
+        for _, expr in assignments:
+            if not expr.has(sympy.Sum):
+                assert not any(
+                    str(s) == "j" for s in expr.free_symbols
+                ), f"bound index leaked into assignment {expr}"
+        for reduced, original in zip(steps, r.steps):
+            for sym, expr in reversed(assignments):
+                reduced = reduced.subs(sym, expr)
+            assert reduced == original
+
+    def test_derivation_reads_top_to_bottom(self):
+        r = self._ols_slope()
+        text = r.derivation()
+        assert "t0 = " in text
+        assert text.splitlines()[-1].startswith("result: ")
+
+    def test_derivation_on_write_history(self):
+        u = Pair.array("u", np.zeros(4))
+        v = np.exp(Pair.array("v", np.arange(4.0)))
+        u[1:3] = v[1:3]
+        text = u.derivation()
+        assert text.splitlines()[-1].startswith("result: ")
+        assert "Piecewise" in text
