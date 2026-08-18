@@ -101,7 +101,12 @@ def _skv_neutral(a, dtype=None, **kwargs):
         if isinstance(value, np.ndarray) and value.dtype == object:
             value = Pair._value_of(value)  # value lane holding Pairs
         value = np.ascontiguousarray(value, dtype=dtype)
-        return Pair(value, a.formula, a._axis_bounds, steps=(a,))
+        ndmin = kwargs.get("ndmin", 0)
+        bounds = a._axis_bounds
+        if ndmin and np.ndim(value) < ndmin:
+            value = np.array(value, ndmin=ndmin)
+            bounds = tuple((0, n) for n in value.shape)
+        return Pair(value, a.formula, bounds, steps=(a,))
     if isinstance(a, np.ndarray) and a.dtype == object:
         unwrapped = Pair._value_of(a)
         if unwrapped is not a:
