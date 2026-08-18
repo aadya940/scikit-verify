@@ -334,6 +334,10 @@ def _skv_maybe(fn):
         # a bound method (norm.pdf): twin the function, rebind to the
         # instance; self.method calls inside chain through the doorman
         inner = fn.__func__
+        if isinstance(fn.__self__, Pair) or (
+            getattr(inner, "__module__", "") or ""
+        ).startswith("skverify"):
+            return fn  # never twin our own machinery
         if not getattr(inner, "__closure__", None):
             sub = runtime_twin(inner)
             if sub is not inner:
