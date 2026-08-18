@@ -1752,6 +1752,11 @@ class Pair:
             k: (np.array(v, copy=True) if isinstance(v, np.ndarray) else v)
             for k, v in ((k, Pair._value_of(v)) for k, v in kwargs.items())
         }
+        # contracts must judge the INPUTS, not overwrite_*-mutated buffers
+        pristine = [
+            np.array(v, copy=True) if isinstance(v, np.ndarray) else v
+            for v in values
+        ]
         result = func(*values, **kwvalues)
         after = [
             np.asarray(a.value).tobytes()
@@ -1799,7 +1804,7 @@ class Pair:
                 else:
                     outs.append(res)
             _OPAQUE.append(
-                check_call(fname, values, result)
+                check_call(fname, pristine, result)
                 + ((f"{fname}_{len(_OPAQUE)}_*", str(call)),)
             )
             return tuple(outs)
@@ -1815,7 +1820,7 @@ class Pair:
             formula = call
             domain = None
         _OPAQUE.append(
-            check_call(fname, values, result) + ((str(formula), str(call)),)
+            check_call(fname, pristine, result) + ((str(formula), str(call)),)
         )
         return Pair(result, formula, domain=domain, steps=Pair._steps_of(*args))
 

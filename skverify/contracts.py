@@ -25,22 +25,62 @@ def _symmetric(a, b):
     return OK if np.allclose(a, a.T.conj()) else FAILED
 
 
-def _banded_residual(args, result):
-    l_and_u, ab, b = args[0], np.asarray(args[1]), np.asarray(args[2])
-    nl, nu = l_and_u
-    x = np.asarray(result)
+def _ab_to_dense(ab, nu):
+    """Dense matrix from LAPACK band storage, THROUGH sympy.banded:
+    row r of ab is diagonal nu - r. The layout is a declaration sympy
+    executes, not loop code of our own to trust."""
+    import sympy
+    from sympy.matrices.sparsetools import banded
+
+    ab = np.asarray(ab)
     n = ab.shape[1]
-    a = np.zeros((n, n))
+    diags = {}
     for r in range(ab.shape[0]):
-        for c in range(n):
-            i = r + c - nu
-            if 0 <= i < n:
-                a[i, c] = ab[r, c]
-    rnorm = np.linalg.norm(a @ x - b)
+        d = nu - r
+        if d > 0:
+            entries = [sympy.Float(v) for v in ab[r, d:]]
+        elif d < 0:
+            entries = [sympy.Float(v) for v in ab[r, : n + d]]
+        else:
+            entries = [sympy.Float(v) for v in ab[r]]
+        if any(e != 0 for e in entries):
+            diags[d] = entries
+    dense = banded(n, n, diags) if diags else sympy.zeros(n, n)
+    return np.array(dense.tolist(), dtype=float)
+
+
+def _relative_residual(a, x, b):
+    r = np.linalg.norm(a @ x - b)
     scale = np.linalg.norm(b) + np.linalg.norm(a) * np.linalg.norm(x)
     if scale == 0:
         return OK if np.allclose(a @ x, b) else FAILED
-    return OK if rnorm / scale < 1e-8 else FAILED
+    return OK if r / scale < 1e-8 else FAILED
+
+
+def _banded_residual(args, result):
+    l_and_u, ab, b = args[0], np.asarray(args[1]), np.asarray(args[2])
+    nl, nu = l_and_u
+    a = _ab_to_dense(ab, nu)
+    return _relative_residual(a, np.asarray(result), b)
+
+
+def _hbanded_residual(args, result):
+    # solveh_banded default: UPPER band storage, symmetric completion
+    ab, b = np.asarray(args[0]), np.asarray(args[1])
+    nu = ab.shape[0] - 1
+    upper = _ab_to_dense(ab, nu)
+    a = np.triu(upper) + np.triu(upper, 1).T
+    return _relative_residual(a, np.asarray(result), b)
+
+
+def _gbsv_residual(args, result):
+    # dgbsv(kl, ku, ab, b): ab carries kl EXTRA fill rows on top; the
+    # solution is output 2 of the (lu, piv, x, info) tuple
+    kl, ku = int(args[0]), int(args[1])
+    ab, b = np.asarray(args[2]), np.asarray(args[3])
+    x = np.asarray(result[2] if isinstance(result, tuple) else result)
+    a = _ab_to_dense(ab[kl:], ku)
+    return _relative_residual(a, x, b)
 
 
 def _design_matrix_probe(args, result):
@@ -89,7 +129,17 @@ CONTRACTS = {
     "solveh_banded": {
         "requires": [],
         "law": "A @ x == b for the banded Hermitian A",
-        "residual": None,
+        "residual": _hbanded_residual,
+    },
+    "gbsv": {
+        "requires": [],
+        "law": "A @ x == b for the banded A (LAPACK storage with fill rows)",
+        "residual": _gbsv_residual,
+    },
+    "dgbsv": {
+        "requires": [],
+        "law": "A @ x == b for the banded A (LAPACK storage with fill rows)",
+        "residual": _gbsv_residual,
     },
     "design_matrix": {
         "requires": [],
