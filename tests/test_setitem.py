@@ -89,10 +89,20 @@ class TestMaskedWrite:
         assert m.formula == sympy.Piecewise((0.0, sympy.Gt(M[I], 2.5)), (M[I], True))
         assert np.allclose(m.value, [0, 1, 2, 0, 0])
 
-    def test_array_under_mask_refused(self):
+    def test_array_under_mask_size_mismatch_raises(self):
         m = Pair.array("m", np.arange(5.0))
-        with pytest.raises(NotImplementedError):
+        with pytest.raises(ValueError):  # numpy semantics: 5 values, 2 slots
             m[m > 2.5] = np.arange(5.0)
+
+    def test_array_under_mask_writes_with_guards(self):
+        from skverify.pair import _GUARDS
+
+        m = Pair.array("m", np.arange(5.0))
+        v = np.exp(Pair.array("v", np.arange(2.0)))
+        _GUARDS.clear()
+        m[m > 2.5] = v
+        assert np.allclose(m.value, [0.0, 1.0, 2.0, 1.0, np.e])
+        assert len(_GUARDS) == 5  # one condition instance per position
 
 
 class TestSetitem2D:

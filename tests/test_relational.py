@@ -209,10 +209,14 @@ class TestEdges:
         m = u == 0.5
         assert m.formula == sympy.Eq(U[I], 0.5)
 
-    def test_bool_indexing_still_refused(self):
+    def test_bool_indexing_gathers_with_guards(self):
+        from skverify.pair import _GUARDS
+
         u = make()
-        with pytest.raises(NotImplementedError):
-            u[u > 0]  # mask indexing is a later feature
+        _GUARDS.clear()
+        r = u[u > 0]
+        assert np.allclose(np.asarray(r.value, dtype=float), u.value[u.value > 0])
+        assert len(_GUARDS) == len(u.value)  # every position's condition recorded
 
     def test_isnan_goes_opaque(self):
         u = make()

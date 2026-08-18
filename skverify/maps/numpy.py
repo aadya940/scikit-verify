@@ -448,6 +448,54 @@ def _median(a, axis=None, **kwargs):
     return Pair(np.median(vals), formula, None, steps=(a,))
 
 
+def _quantile_like(np_fn, scale):
+    def entry(a, q, axis=None, **kwargs):
+        if not isinstance(a, Pair) or axis is not None or len(a._axis_bounds or ()) != 1:
+            return np_fn(np.asarray(Pair._value_of(a), dtype=float), q, axis=axis)
+        from ..pair import _GUARDS
+
+        vals = np.asarray(a.value, dtype=float)
+        order = np.argsort(vals, kind="stable")
+        sym = axis_idx(0)
+        for k in range(len(order) - 1):
+            _GUARDS.append(
+                sympy.Le(
+                    a.formula.subs(sym, int(order[k])),
+                    a.formula.subs(sym, int(order[k + 1])),
+                )
+            )
+
+        def one(qv):
+            pos = (len(order) - 1) * float(qv) / scale
+            lo, hi = int(np.floor(pos)), int(np.ceil(pos))
+            w = pos - lo
+            f_lo = a.formula.subs(sym, int(order[lo]))
+            f_hi = a.formula.subs(sym, int(order[hi]))
+            return (1 - w) * f_lo + w * f_hi
+
+        if np.ndim(q) == 0:
+            return Pair(np_fn(vals, q), one(q), None, steps=(a,))
+        formulas = [one(qv) for qv in np.asarray(q).ravel()]
+        out = np.empty(len(formulas), dtype=object)
+        values = np.asarray(np_fn(vals, q), dtype=float)
+        for k, f in enumerate(formulas):
+            out[k] = Pair(values[k], f, None, steps=(a,))
+        return out
+
+    return entry
+
+
+FUNCTION_TABLE[np.percentile] = _quantile_like(np.percentile, 100.0)
+FUNCTION_TABLE[np.quantile] = _quantile_like(np.quantile, 1.0)
+
+
+def _round(a, decimals=0, **kwargs):
+    if isinstance(a, Pair):
+        raise NotImplementedError("rounding a traced value changes the math")
+    return np.round(Pair._numeric(np.asarray(a), copy=False), decimals)
+
+
+FUNCTION_TABLE[np.round] = _round
 FUNCTION_TABLE[np.median] = _median
 FUNCTION_TABLE[np.mean] = _mean
 FUNCTION_TABLE[np.var] = _var

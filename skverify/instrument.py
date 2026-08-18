@@ -43,6 +43,15 @@ OPAQUE_CALLABLES = {
     "_lstsq",
     "svd",
     "pinv",
+    "r2c",
+    "c2c",
+    "c2r",
+    "rfft",
+    "irfft",
+    "fft",
+    "ifft",
+    "rfftn",
+    "fftn",
 }
 NEUTRAL_METHODS = {"toarray", "astype", "copy", "view", "type"}
 CONCRETE = {"isfinite", "isnan", "isinf"}  # validation checks, not math
@@ -106,7 +115,7 @@ def _skv_method(name, obj, *args, **kwargs):
     if (
         isinstance(obj, np.ndarray)
         and obj.dtype == object
-        and all(isinstance(e, Pair) for e in obj.ravel())
+        and any(isinstance(e, Pair) for e in obj.ravel())
     ):
         if name in ("astype", "copy"):
             return obj  # traced scalars; the cast/copy is math-neutral
@@ -133,6 +142,54 @@ def _skv_method(name, obj, *args, **kwargs):
         value = obj.value.copy() if hasattr(obj.value, "copy") else obj.value
         return Pair(value, obj.formula, obj._axis_bounds, steps=(obj,))
     return getattr(obj.value, name)(*args, **kwargs)
+
+
+class _SkvAtIndexed:
+    def __init__(self, pair, idx):
+        self.pair, self.idx = pair, idx
+
+    def _updated(self, op, v):
+        out = Pair(
+            np.array(self.pair.value, copy=True),
+            self.pair.formula,
+            self.pair._axis_bounds,
+            steps=(self.pair,),
+        )
+        out[self.idx] = op(out[self.idx], v) if op else v
+        return out
+
+    def set(self, v, **kw):
+        return self._updated(None, v)
+
+    def add(self, v, **kw):
+        return self._updated(lambda a, b: a + b, v)
+
+    def subtract(self, v, **kw):
+        return self._updated(lambda a, b: a - b, v)
+
+    def multiply(self, v, **kw):
+        return self._updated(lambda a, b: a * b, v)
+
+    def divide(self, v, **kw):
+        return self._updated(lambda a, b: a / b, v)
+
+
+class _SkvAt:
+    def __init__(self, pair):
+        self.pair = pair
+
+    def __getitem__(self, idx):
+        return _SkvAtIndexed(self.pair, idx)
+
+
+def _skv_at(real_at, x, *args, **kwargs):
+    # array_api_extra's functional update: on a Pair it is setitem on
+    # a copy; anything else goes to the real helper
+    if isinstance(x, Pair):
+        if args:  # at(x, idx) form
+            return _SkvAtIndexed(x, args[0])
+        return _SkvAt(x)
+    return real_at(x, *args, **kwargs)
 
 
 def _skv_concrete(name, a, *args, **kwargs):
@@ -281,15 +338,31 @@ def _skv_maybe(fn):
             return fn
 
         def dispatcher_shim(*args, **kwargs):
-            if any(_traced(a) and not isinstance(a, Pair) for a in args):
+            if any(
+                (_traced(a) and not isinstance(a, Pair))
+                or (isinstance(a, np.ndarray) and a.dtype == object)
+                for a in args
+            ):
                 return entry(*args, **kwargs)
             return fn(*args, **kwargs)
 
         return dispatcher_shim
+    if isinstance(fn, np.ufunc):
+        def ufunc_shim(*args, **kwargs):
+            if any(
+                isinstance(a, np.ndarray)
+                and a.dtype == object
+                and not any(isinstance(e, Pair) for e in a.ravel())
+                for a in args
+            ):
+                # plain-number object arrays: no object loop, no Pairs
+                args = [Pair._numeric(a, copy=False) for a in args]
+            return fn(*args, **kwargs)
+
+        return ufunc_shim
     if (
         inspect.isfunction(fn)
         or inspect.ismethod(fn)
-        or isinstance(fn, np.ufunc)
         or getattr(fn, "__module__", None) == "builtins"
         or hasattr(fn, "__wrapped__")  # numpy dispatchers: the protocol handles them
     ):
@@ -461,6 +534,13 @@ class _Rewriter(ast.NodeTransformer):
                 ast.Name(id="self", ctx=ast.Load()),
             ]
             self.sites.append("super() -> explicit twin super")
+        elif name == "at":
+            self.sites.append("at -> traced functional update")
+            node = ast.Call(
+                func=ast.Name(id="__skv_at__", ctx=ast.Load()),
+                args=[node.func] + node.args,
+                keywords=node.keywords,
+            )
         elif name == "array_namespace":
             self.sites.append("array_namespace -> numpy (compat layer skipped)")
             node.func = ast.Name(id="__skv_namespace__", ctx=ast.Load())
@@ -497,6 +577,11 @@ class _Rewriter(ast.NodeTransformer):
             node = self._maybe_opaque(node)
         elif isinstance(node.func, ast.Attribute):
             node = self._maybe_opaque(node)
+        return node
+
+    def visit_Name(self, node):
+        if node.id == "__class__":
+            node.id = "__skv_class__"  # re-exec'd methods lose the cell
         return node
 
     def _maybe_opaque(self, node):
@@ -583,6 +668,7 @@ def _instrument(fn, depth, seen):
     namespace["__skv_maybe__"] = _skv_maybe
     namespace["__skv_finfo__"] = _skv_finfo
     namespace["__skv_namespace__"] = _skv_namespace
+    namespace["__skv_at__"] = _skv_at
     namespace["__skv_concrete__"] = _skv_concrete
     namespace["__skv_scalarize__"] = _skv_scalarize
     namespace["__skv_isinstance__"] = _skv_isinstance
@@ -728,11 +814,38 @@ def _instrument_class(C, depth, seen):
     if not sites:
         _CLASS_TWINS[C] = (C, ())
         return C, ()
+    # methods carried over UNinstrumented but holding the original
+    # class in their __class__ cell would break super(): clone them
+    # with a fresh cell and rebind it to the twin
+    import types
+
+    rebind = []
+    for name, raw in list(members.items()):
+        target = raw.__func__ if isinstance(raw, (staticmethod, classmethod)) else raw
+        if (
+            inspect.isfunction(target)
+            and getattr(target.__code__, "co_freevars", ()) == ("__class__",)
+            and target.__closure__ is not None
+        ):
+            cell = types.CellType(None)
+            clone = types.FunctionType(
+                target.__code__,
+                target.__globals__,
+                target.__name__,
+                target.__defaults__,
+                (cell,),
+            )
+            clone.__kwdefaults__ = target.__kwdefaults__
+            wrapper_kind = type(raw) if isinstance(raw, (staticmethod, classmethod)) else None
+            members[name] = wrapper_kind(clone) if wrapper_kind else clone
+            rebind.append(cell)
     try:
         twin = type(C.__name__, (base,), members)
     except TypeError:
         _CLASS_TWINS[C] = (C, ())
         return C, ()
+    for cell in rebind:
+        cell.cell_contents = twin
     for ns in patch_namespaces:
         ns["__skv_class__"] = twin
     _CLASS_TWINS[C] = (twin, tuple(sites))

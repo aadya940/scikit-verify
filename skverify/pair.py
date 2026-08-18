@@ -529,6 +529,20 @@ class Pair:
             vals = np.unique(x)
             if len(vals) == 1:  # uniform: zeros, ones, full
                 return sympy.sympify(vals.item())  # constant field, clean
+            if x.dtype.kind in "fiu" and 0 < x.size <= 4096:
+                # a concrete operand (filter kernels, weights): a named
+                # table, values disclosed -- same treatment as gathers
+                name = f"const_{len(_OPAQUE)}"
+                table = sympy.IndexedBase(name)
+                letters = tuple(axis_idx(ax) for ax in range(x.ndim))
+                _OPAQUE.append(
+                    (
+                        name,
+                        (("table", "concrete"),),
+                        (str(table[letters]), f"{name} = {x.tolist()}"),
+                    )
+                )
+                return table[letters]
             raise NotImplementedError(
                 "raw non-uniform ndarray operand, wrap it: Pair.array(name, x)"
             )
@@ -755,12 +769,67 @@ class Pair:
         # written region, the value's rule (re-indexed) inside it
         if self._axis_bounds is None:
             raise TypeError("scalar Pair does not support item assignment")
+
+        def is_idx_arr(k):
+            return (
+                isinstance(k, (list, np.ndarray))
+                and np.asarray(k).dtype.kind in "iu"
+                and np.asarray(k).ndim >= 1
+            )
+
+        parts = key if isinstance(key, tuple) else (key,)
+        if (
+            len(parts) == 1
+            and isinstance(parts[0], np.ndarray)
+            and parts[0].dtype == bool
+        ):
+            # concrete boolean mask with any value shape: the selected
+            # positions are trace facts; decompose into scalar writes
+            positions = np.nonzero(parts[0])
+            parts = (positions[0],) if len(positions) == 1 else positions
+        if any(is_idx_arr(k) for k in parts) and all(
+            is_idx_arr(k) or isinstance(k, (int, np.integer)) for k in parts
+        ):
+            # scatter through index arrays: concrete positions, so
+            # decompose into scalar writes (p[rows, cols] = v)
+            arrs = [np.asarray(k) for k in parts if is_idx_arr(k)]
+            arrays = np.broadcast_arrays(*arrs)
+            flat = [a.ravel() for a in arrays]
+            n = flat[0].size
+            for pos in range(n):
+                it = iter(flat)
+                target = tuple(
+                    int(k) if isinstance(k, (int, np.integer)) else int(next(it)[pos])
+                    for k in parts
+                )
+                target = target if len(target) > 1 else target[0]
+                if np.ndim(Pair._value_of(val)) == 0:
+                    self[target] = val
+                else:
+                    self[target] = val[pos]
+            return
         if isinstance(key, Pair):
             if Pair._is_condition(key.formula):
                 if isinstance(val, (Pair, np.ndarray)) and np.ndim(Pair._value_of(val)):
-                    raise NotImplementedError(
-                        "masked assignment with an array value is data-dependent"
-                    )
+                    # concrete mask, array value: positions are trace
+                    # facts, conditions become per-position guards, and
+                    # the write decomposes scalar by scalar
+                    mask = np.asarray(key.value, dtype=bool)
+                    selected = np.nonzero(mask)[0]
+                    n_val = np.size(Pair._value_of(val))
+                    if n_val != selected.size:
+                        raise ValueError(
+                            f"NumPy boolean array indexing assignment "
+                            f"cannot assign {n_val} input values to the "
+                            f"{selected.size} output values where the mask is true"
+                        )
+                    sym = axis_idx(0)
+                    for pos in range(mask.size):
+                        cond = key.formula.subs(sym, pos)
+                        _GUARDS.append(cond if mask[pos] else sympy.Not(cond))
+                    for k, pos in enumerate(selected):
+                        self[int(pos)] = val[k]
+                    return
                 self.value[key.value] = Pair._value_of(val)
                 prior = self.formula
                 self.formula = sympy.Piecewise(
@@ -1109,6 +1178,43 @@ class Pair:
     def min(self, axis=None, **kwargs):
         return np.minimum.reduce(self, axis=axis, **kwargs)
 
+    @property
+    def real(self):
+        value = np.real(self.value)
+        formula = self.formula if np.isrealobj(self.value) else sympy.re(self.formula)
+        return Pair(value, formula, self._axis_bounds, steps=(self,))
+
+    @property
+    def imag(self):
+        if np.isrealobj(self.value):
+            return Pair(
+                np.imag(self.value), sympy.Integer(0), self._axis_bounds, steps=(self,)
+            )
+        return Pair(
+            np.imag(self.value), sympy.im(self.formula), self._axis_bounds, steps=(self,)
+        )
+
+    def conj(self):
+        if np.isrealobj(self.value):
+            return self
+        return Pair(
+            np.conj(self.value),
+            sympy.conjugate(self.formula),
+            self._axis_bounds,
+            steps=(self,),
+        )
+
+    def setflags(self, **kwargs):
+        pass  # writeability bookkeeping; the traced copy is ours
+
+    def __index__(self):
+        # a Pair used AS AN INDEX is bookkeeping (positions are trace
+        # facts, like find_interval); non-integral values refuse
+        v = self.value
+        if np.ndim(v) == 0 and float(v) == int(v):
+            return int(v)
+        raise TypeError("only integral scalar Pairs can index")
+
     def squeeze(self, axis=None):
         # removing extent-1 axes is a layout-preserving reshape
         return self.reshape(np.squeeze(np.asarray(self.value), axis=axis).shape)
@@ -1200,6 +1306,26 @@ class Pair:
             return self  # numpy's 0-d unwrap idiom, vals[()]
         if self._axis_bounds is None:
             raise TypeError("scalar Pair is not subscriptable")
+        if isinstance(key, Pair) and Pair._is_condition(key.formula):
+            # mask gather u[u > 0]: the mask's VALUE fixes the selected
+            # positions (trace facts); the mask's CONDITIONS become
+            # per-position preconditions, so the certificate is honest
+            # about the path
+            mask = np.asarray(key.value, dtype=bool)
+            sym = axis_idx(0)
+            for pos in range(mask.size):
+                cond = key.formula.subs(sym, pos)
+                _GUARDS.append(cond if mask[pos] else sympy.Not(cond))
+            idx = np.nonzero(mask)[0]
+            if idx.size == 0:
+                value = np.asarray(self.value)[mask]
+                return Pair(
+                    value,
+                    self.formula,
+                    ((0, 0),) + tuple(self._axis_bounds[1:]),
+                    steps=(self,),
+                )
+            return self._axis_gather(0, idx, mask)
         parts = key if isinstance(key, tuple) else (key,)
         if any(k is None for k in parts):
             # w[:, None]: newaxis only inserts extent-1 axes -- apply the
