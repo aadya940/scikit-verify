@@ -212,6 +212,9 @@ def _skv_concrete(name, a, *args, **kwargs):
 
 
 def _skv_scalarize(kind, x):
+    v = np.asarray(Pair._value_of(x))
+    if v.ndim and v.size == 1:
+        return kind(v.item())  # numpy 2 forbids float() on size-1 arrays
     return kind(Pair._value_of(x))
 
 
@@ -656,13 +659,32 @@ def instrument(fn, depth=3):
                 # for this call by rerunning the real thing on values
                 sub, sites = _instrument(inner, depth, seen=set())
                 return sub, (f"{fn.__name__}: decorator unwrapped",) + sites
-            return fn, ()  # opaque closures do not survive re-exec
+            try:
+                cells = {
+                    name: cell.cell_contents
+                    for name, cell in zip(
+                        fn.__code__.co_freevars, fn.__closure__
+                    )
+                }
+            except ValueError:
+                return fn, ()  # unfilled cells
+            if "__class__" not in cells:
+                # a plain closure: its cells are this call's constants.
+                # Snapshot them into the twin's namespace -- the re-exec'd
+                # def resolves the names there
+                sub, sites = _instrument(fn, depth, seen=set(), extra=cells)
+                if sites:
+                    return sub, (
+                        f"{fn.__name__}: closure cells bound as trace constants",
+                    ) + sites
+                return fn, ()
+            return fn, ()  # methods with __class__ cells stay untouched here
         return _instrument(fn, depth, seen=set())
     except (OSError, TypeError, SyntaxError, KeyError, AttributeError):
         return fn, ()
 
 
-def _instrument(fn, depth, seen):
+def _instrument(fn, depth, seen, extra=None):
     source = textwrap.dedent(inspect.getsource(fn))
     try:
         tree = ast.parse(source)
@@ -708,6 +730,8 @@ def _instrument(fn, depth, seen):
     ast.fix_missing_locations(tree)
 
     namespace = dict(fn.__globals__)
+    if extra:
+        namespace.update(extra)
     namespace["__skv_zeros__"] = _skv_zeros
     namespace["__skv_empty__"] = _skv_empty
     namespace["__skv_ones__"] = _skv_ones

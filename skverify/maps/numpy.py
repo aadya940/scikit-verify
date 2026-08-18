@@ -502,6 +502,35 @@ def _round(a, decimals=0, **kwargs):
 
 
 FUNCTION_TABLE[np.round] = _round
+def _average(a, axis=None, weights=None, **kwargs):
+    if not isinstance(a, Pair):
+        arr = np.asarray(a)
+        if (
+            arr.dtype == object
+            and axis is None
+            and any(isinstance(e, Pair) for e in arr.ravel())
+        ):
+            elems = list(arr.ravel())
+            if weights is None:
+                return _sum(arr) / arr.size  # element dunders keep the trace
+            wvals = np.asarray(Pair._value_of(weights)).ravel()
+            num = elems[0] * float(wvals[0])
+            for e, wv in zip(elems[1:], wvals[1:]):
+                num = num + e * float(wv)
+            return num / float(wvals.sum())
+        return np.average(
+            Pair._numeric(arr, copy=False), axis=axis, weights=weights
+        )
+    if weights is None:
+        return a.mean(axis=axis)
+    w = weights
+    return _sum(a * w, axis=axis) / _sum(
+        w if isinstance(w, Pair) else Pair(np.asarray(w), Pair._formula_of(w), a._axis_bounds),
+        axis=axis,
+    )
+
+
+FUNCTION_TABLE[np.average] = _average
 FUNCTION_TABLE[np.median] = _median
 FUNCTION_TABLE[np.mean] = _mean
 FUNCTION_TABLE[np.var] = _var

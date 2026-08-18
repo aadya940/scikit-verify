@@ -1324,6 +1324,13 @@ class Pair:
             return int(v)
         raise TypeError("only integral scalar Pairs can index")
 
+    def ravel(self, order="C"):
+        # flattening is a layout-preserving reshape
+        return self.reshape((int(np.size(self.value)),))
+
+    def flatten(self, order="C"):
+        return self.ravel()
+
     def squeeze(self, axis=None):
         # removing extent-1 axes is a layout-preserving reshape
         return self.reshape(np.squeeze(np.asarray(self.value), axis=axis).shape)
