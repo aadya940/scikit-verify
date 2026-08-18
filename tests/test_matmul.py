@@ -133,10 +133,11 @@ class TestDispatchEdges:
         assert r.formula == sympy.Sum(1.0 * B[KD], (KD, 0, 3))
         assert np.allclose(r.value, np.ones((3, 4)) @ b.value)
 
-    def test_concrete_nonuniform_refuses(self):
+    def test_concrete_operand_becomes_named_table(self):
         b = Pair.array("b", np.arange(4.0))
-        with pytest.raises(NotImplementedError, match="wrap it"):
-            np.arange(8.0).reshape(2, 4) @ b
+        r = np.arange(8.0).reshape(2, 4) @ b
+        assert "const_" in str(r.formula)  # values disclosed, not hidden
+        assert np.allclose(r.value, np.arange(8.0).reshape(2, 4) @ b.value)
 
     def test_scalar_operand_raises(self):
         a = Pair.array("a", np.arange(4.0))

@@ -13,6 +13,7 @@ touched.
 
 import ast
 import inspect
+import sys
 import textwrap
 
 import numpy as np
@@ -41,8 +42,19 @@ OPAQUE_CALLABLES = {
     "solve",
     "lstsq",
     "_lstsq",
+    "svd",
+    "pinv",
+    "r2c",
+    "c2c",
+    "c2r",
+    "rfft",
+    "irfft",
+    "fft",
+    "ifft",
+    "rfftn",
+    "fftn",
 }
-NEUTRAL_METHODS = {"toarray", "astype", "copy", "view"}
+NEUTRAL_METHODS = {"toarray", "astype", "copy", "view", "type"}
 CONCRETE = {"isfinite", "isnan", "isinf"}  # validation checks, not math
 SCALARIZE = {"float", "int"}  # scalar coercion at a compiled boundary
 # compiled lookups whose result is bookkeeping (an interval index),
@@ -61,15 +73,15 @@ def _bounds_of(shape):
     return tuple((0, int(s)) for s in shape)
 
 
-def _skv_zeros(shape, dtype=None, **kwargs):
+def _skv_zeros(shape, dtype=None, *args, **kwargs):
     return Pair(np.zeros(shape), sympy.Integer(0), _bounds_of(shape))
 
 
-def _skv_ones(shape, dtype=None, **kwargs):
+def _skv_ones(shape, dtype=None, *args, **kwargs):
     return Pair(np.ones(shape), sympy.Integer(1), _bounds_of(shape))
 
 
-def _skv_full(shape, fill, dtype=None, **kwargs):
+def _skv_full(shape, fill, dtype=None, *args, **kwargs):
     return Pair(
         np.full(shape, Pair._value_of(fill)),
         Pair._formula_of(fill),
@@ -78,7 +90,7 @@ def _skv_full(shape, fill, dtype=None, **kwargs):
     )
 
 
-def _skv_empty(shape, dtype=None, **kwargs):
+def _skv_empty(shape, dtype=None, *args, **kwargs):
     bounds = _bounds_of(shape)
     letters = tuple(axis_idx(ax) for ax in range(len(bounds)))
     return Pair(np.empty(shape), sympy.Function("uninitialized")(*letters), bounds)
@@ -86,20 +98,44 @@ def _skv_empty(shape, dtype=None, **kwargs):
 
 def _skv_neutral(a, dtype=None, **kwargs):
     if isinstance(a, Pair):
-        value = np.ascontiguousarray(a.value, dtype=dtype)
-        return Pair(value, a.formula, a._axis_bounds, steps=(a,))
+        value = a.value
+        if isinstance(value, np.ndarray) and value.dtype == object:
+            value = Pair._value_of(value)  # value lane holding Pairs
+        value = np.ascontiguousarray(value, dtype=dtype)
+        ndmin = kwargs.get("ndmin", 0)
+        bounds = a._axis_bounds
+        if ndmin and np.ndim(value) < ndmin:
+            value = np.array(value, ndmin=ndmin)
+            bounds = tuple((0, n) for n in value.shape)
+        return Pair(value, a.formula, bounds, steps=(a,))
+    if isinstance(a, np.ndarray) and a.dtype == object:
+        unwrapped = Pair._value_of(a)
+        if unwrapped is not a:
+            return a  # object array OF Pairs: keep the traced elements
     return np.asarray(a, dtype=dtype)
 
 
 def _skv_method(name, obj, *args, **kwargs):
+    if inspect.ismodule(obj):
+        # xp.astype(a, dt): a module function, not a method -- route
+        # through the doorman like any other call
+        return _skv_maybe(getattr(obj, name))(*args, **kwargs)
+    if name == "type" and args and isinstance(args[0], Pair):
+        return args[0]  # ret.dtype.type(x): a cast on a traced scalar
     if (
         isinstance(obj, np.ndarray)
         and obj.dtype == object
-        and all(isinstance(e, Pair) for e in obj.ravel())
+        and any(isinstance(e, Pair) for e in obj.ravel())
     ):
         if name in ("astype", "copy"):
             return obj  # traced scalars; the cast/copy is math-neutral
     if not isinstance(obj, Pair):
+        if (
+            isinstance(obj, np.ndarray)
+            and obj.dtype == object
+            and not any(isinstance(e, Pair) for e in obj.ravel())
+        ):
+            obj = Pair._numeric(obj, copy=False)
         return getattr(obj, name)(*args, **kwargs)
     if name == "view":
         dtype = args[0] if args else kwargs.get("dtype")
@@ -124,12 +160,72 @@ def _skv_method(name, obj, *args, **kwargs):
     return getattr(obj.value, name)(*args, **kwargs)
 
 
+class _SkvAtIndexed:
+    def __init__(self, pair, idx):
+        self.pair, self.idx = pair, idx
+
+    def _updated(self, op, v):
+        out = Pair(
+            np.array(self.pair.value, copy=True),
+            self.pair.formula,
+            self.pair._axis_bounds,
+            steps=(self.pair,),
+        )
+        out[self.idx] = op(out[self.idx], v) if op else v
+        return out
+
+    def set(self, v, **kw):
+        return self._updated(None, v)
+
+    def add(self, v, **kw):
+        return self._updated(lambda a, b: a + b, v)
+
+    def subtract(self, v, **kw):
+        return self._updated(lambda a, b: a - b, v)
+
+    def multiply(self, v, **kw):
+        return self._updated(lambda a, b: a * b, v)
+
+    def divide(self, v, **kw):
+        return self._updated(lambda a, b: a / b, v)
+
+
+class _SkvAt:
+    def __init__(self, pair):
+        self.pair = pair
+
+    def __getitem__(self, idx):
+        return _SkvAtIndexed(self.pair, idx)
+
+
+def _skv_at(real_at, x, *args, **kwargs):
+    # array_api_extra's functional update: on a Pair it is setitem on
+    # a copy; anything else goes to the real helper
+    if isinstance(x, Pair):
+        if args:  # at(x, idx) form
+            return _SkvAtIndexed(x, args[0])
+        return _SkvAt(x)
+    return real_at(x, *args, **kwargs)
+
+
 def _skv_concrete(name, a, *args, **kwargs):
     return getattr(np, name)(np.asarray(Pair._value_of(a)), *args, **kwargs)
 
 
 def _skv_scalarize(kind, x):
+    v = np.asarray(Pair._value_of(x))
+    if v.ndim and v.size == 1:
+        return kind(v.item())  # numpy 2 forbids float() on size-1 arrays
     return kind(Pair._value_of(x))
+
+
+def _skv_isinstance(obj, types):
+    # inside instrumented code a Pair IS an ndarray for gate purposes
+    if isinstance(obj, Pair):
+        tt = types if isinstance(types, tuple) else (types,)
+        if any(t is np.ndarray for t in tt):
+            return True
+    return isinstance(obj, types)
 
 
 def _skv_namespace(*args, **kwargs):
@@ -208,6 +304,27 @@ def _skv_opaque_out(fn, out_idxs, transposed, *args, **kwargs):
     return outs[0] if len(outs) == 1 else tuple(outs)
 
 
+def runtime_twin(fn):
+    """Memoized instrumented copy of a plain function, or the original
+    when instrumentation finds nothing to rewrite."""
+    if fn in _FN_MEMO:
+        sub, sites = _FN_MEMO[fn]
+        return sub if sites else fn
+    try:
+        sub, sites = _instrument(fn, 0, set())
+    except (OSError, TypeError, SyntaxError, KeyError, AttributeError):
+        sub, sites = fn, ()
+    _FN_MEMO[fn] = (sub, sites)
+    return sub if sites else fn
+
+
+def _twinnable(fn):
+    # stdlib code is never mathematics; re-exec also breaks its
+    # name-mangled privates (__marker) and C-adjacent idioms
+    mod = (getattr(fn, "__module__", "") or "").split(".")[0]
+    return mod not in sys.stdlib_module_names and mod not in ("builtins", "skverify")
+
+
 def _skv_maybe(fn):
     """Pass Python functions, methods, classes, ufuncs and builtins
     through; wrap anything COMPILED so traced arguments turn the call
@@ -216,10 +333,90 @@ def _skv_maybe(fn):
     cannot dodge them."""
     if getattr(fn, "__name__", None) in OPAQUE_CALLABLES:
         return _skv_opaque(fn)
+    if inspect.isbuiltin(fn) and not isinstance(
+        getattr(fn, "__self__", None), (np.ndarray, Pair, type(np))
+    ):
+        # builtin METHODS (list.append, dict.get) have __module__ None
+        # and must never opaque: they would swallow Pairs into values
+        return fn
+    if inspect.isclass(fn):
+        # classes reached through variables (dispatch tables) twin at
+        # runtime; the cache makes this once per class
+        try:
+            twin, _ = _instrument_class(fn, 3, set())
+            return twin
+        except (OSError, TypeError, SyntaxError, KeyError, AttributeError):
+            return fn
+    if inspect.ismethod(fn) and inspect.isfunction(fn.__func__):
+        # a bound method (norm.pdf): twin the function, rebind to the
+        # instance; self.method calls inside chain through the doorman
+        inner = fn.__func__
+        if isinstance(fn.__self__, Pair) or not _twinnable(inner):
+            return fn
+        if not getattr(inner, "__closure__", None):
+            sub = runtime_twin(inner)
+            if sub is not inner:
+                return sub.__get__(fn.__self__)
+        return fn
+    if inspect.isfunction(fn) and not getattr(fn, "__closure__", None):
+        if _twinnable(fn) and "__skv" not in fn.__name__:
+            if fn in _FN_MEMO:
+                sub, sub_sites = _FN_MEMO[fn]
+            else:
+                try:
+                    sub, sub_sites = _instrument(fn, 0, set())
+                except (OSError, TypeError, SyntaxError, KeyError, AttributeError):
+                    sub, sub_sites = fn, ()
+                _FN_MEMO[fn] = (sub, sub_sites)
+            return sub if sub_sites else fn
+        return fn
+    if hasattr(fn, "__wrapped__") and not inspect.isfunction(fn):
+        # numpy dispatcher: the protocol handles Pair args, but OBJECT
+        # arrays of Pairs bypass it -- route those through our table
+        from .registry import FUNCTION_TABLE
+
+        entry = FUNCTION_TABLE.get(fn)
+        if entry is None:
+            def plain_shim(*args, **kwargs):
+                if any(
+                    isinstance(a, np.ndarray)
+                    and a.dtype == object
+                    and not any(isinstance(e, Pair) for e in a.ravel())
+                    for a in args
+                ):
+                    # plain-number object arrays carry no formulas:
+                    # coercing loses nothing and numpy internals need it
+                    args = [Pair._numeric(a, copy=False) for a in args]
+                return fn(*args, **kwargs)
+
+            return plain_shim
+
+        def dispatcher_shim(*args, **kwargs):
+            if any(
+                (_traced(a) and not isinstance(a, Pair))
+                or (isinstance(a, np.ndarray) and a.dtype == object)
+                for a in args
+            ):
+                return entry(*args, **kwargs)
+            return fn(*args, **kwargs)
+
+        return dispatcher_shim
+    if isinstance(fn, np.ufunc):
+        def ufunc_shim(*args, **kwargs):
+            if any(
+                isinstance(a, np.ndarray)
+                and a.dtype == object
+                and not any(isinstance(e, Pair) for e in a.ravel())
+                for a in args
+            ):
+                # plain-number object arrays: no object loop, no Pairs
+                args = [Pair._numeric(a, copy=False) for a in args]
+            return fn(*args, **kwargs)
+
+        return ufunc_shim
     if (
         inspect.isfunction(fn)
         or inspect.ismethod(fn)
-        or isinstance(fn, (type, np.ufunc))
         or getattr(fn, "__module__", None) == "builtins"
         or hasattr(fn, "__wrapped__")  # numpy dispatchers: the protocol handles them
     ):
@@ -259,6 +456,7 @@ class _Rewriter(ast.NodeTransformer):
         self.sites = []
         self.callees = set()
         self.wrapped = 0
+        self.first_arg = None
 
     def _tag_loop(self, node):
         self.generic_visit(node)
@@ -373,12 +571,30 @@ class _Rewriter(ast.NodeTransformer):
                 args=[ast.Constant(value=name)] + node.args,
                 keywords=node.keywords,
             )
+        elif name == "isinstance" and isinstance(node.func, ast.Name):
+            self.sites.append("isinstance -> Pair counts as ndarray")
+            node.func = ast.Name(id="__skv_isinstance__", ctx=ast.Load())
         elif name in SCALARIZE and isinstance(node.func, ast.Name):
             self.sites.append(f"{name} -> concrete scalar")
             node = ast.Call(
                 func=ast.Name(id="__skv_scalarize__", ctx=ast.Load()),
                 args=[node.func] + node.args,
                 keywords=[],
+            )
+        elif name == "super" and not node.args:
+            # re-exec'd methods lose the __class__ cell zero-arg super()
+            # needs; the twin class is injected as __skv_class__
+            node.args = [
+                ast.Name(id="__skv_class__", ctx=ast.Load()),
+                ast.Name(id=self.first_arg or "self", ctx=ast.Load()),
+            ]
+            self.sites.append("super() -> explicit twin super")
+        elif name == "at":
+            self.sites.append("at -> traced functional update")
+            node = ast.Call(
+                func=ast.Name(id="__skv_at__", ctx=ast.Load()),
+                args=[node.func] + node.args,
+                keywords=node.keywords,
             )
         elif name == "array_namespace":
             self.sites.append("array_namespace -> numpy (compat layer skipped)")
@@ -418,6 +634,11 @@ class _Rewriter(ast.NodeTransformer):
             node = self._maybe_opaque(node)
         return node
 
+    def visit_Name(self, node):
+        if node.id == "__class__":
+            node.id = "__skv_class__"  # re-exec'd methods lose the cell
+        return node
+
     def _maybe_opaque(self, node):
         # the doorman: unregistered COMPILED callables auto-seal into
         # opaque atoms at runtime; Python functions, ufuncs, builtins
@@ -439,20 +660,43 @@ def instrument(fn, depth=3):
     returns (fn, ()) so tracing proceeds uninstrumented."""
     try:
         if getattr(fn, "__closure__", None):
-            inner = getattr(fn, "__wrapped__", None)
+            inner = fn
+            while getattr(inner, "__wrapped__", None) is not None:
+                inner = inner.__wrapped__  # peel stacked decorators
+            if inner is fn:
+                inner = None
             if inspect.isfunction(inner) and not inner.__closure__:
                 # a wrapped function is just two functions: trace the
                 # inner one; to_sympy verifies the wrapper was neutral
                 # for this call by rerunning the real thing on values
                 sub, sites = _instrument(inner, depth, seen=set())
                 return sub, (f"{fn.__name__}: decorator unwrapped",) + sites
-            return fn, ()  # opaque closures do not survive re-exec
+            try:
+                cells = {
+                    name: cell.cell_contents
+                    for name, cell in zip(
+                        fn.__code__.co_freevars, fn.__closure__
+                    )
+                }
+            except ValueError:
+                return fn, ()  # unfilled cells
+            if "__class__" not in cells:
+                # a plain closure: its cells are this call's constants.
+                # Snapshot them into the twin's namespace -- the re-exec'd
+                # def resolves the names there
+                sub, sites = _instrument(fn, depth, seen=set(), extra=cells)
+                if sites:
+                    return sub, (
+                        f"{fn.__name__}: closure cells bound as trace constants",
+                    ) + sites
+                return fn, ()
+            return fn, ()  # methods with __class__ cells stay untouched here
         return _instrument(fn, depth, seen=set())
     except (OSError, TypeError, SyntaxError, KeyError, AttributeError):
         return fn, ()
 
 
-def _instrument(fn, depth, seen):
+def _instrument(fn, depth, seen, extra=None):
     source = textwrap.dedent(inspect.getsource(fn))
     try:
         tree = ast.parse(source)
@@ -483,15 +727,25 @@ def _instrument(fn, depth, seen):
     if fdef.decorator_list:
         # transparent decorators (metadata-only, returned the original
         # function: no closure, no __wrapped__) are safe to strip; a
-        # wrapping decorator changes semantics, so bail
-        if getattr(fn, "__wrapped__", None) is not None or fn.__closure__:
+        # wrapping decorator changes semantics, so bail. A __class__
+        # cell alone is fine: super() is rewritten explicit
+        only_class_cell = all(
+            v == "__class__" for v in fn.__code__.co_freevars
+        )
+        if getattr(fn, "__wrapped__", None) is not None or (
+            fn.__closure__ and not only_class_cell
+        ):
             raise TypeError("wrapped functions are not instrumented")
         fdef.decorator_list = []
     rewriter = _Rewriter(fn.__globals__, tag=fn.__name__)
+    if fdef.args.args:
+        rewriter.first_arg = fdef.args.args[0].arg
     rewriter.visit(tree)
     ast.fix_missing_locations(tree)
 
     namespace = dict(fn.__globals__)
+    if extra:
+        namespace.update(extra)
     namespace["__skv_zeros__"] = _skv_zeros
     namespace["__skv_empty__"] = _skv_empty
     namespace["__skv_ones__"] = _skv_ones
@@ -502,8 +756,10 @@ def _instrument(fn, depth, seen):
     namespace["__skv_maybe__"] = _skv_maybe
     namespace["__skv_finfo__"] = _skv_finfo
     namespace["__skv_namespace__"] = _skv_namespace
+    namespace["__skv_at__"] = _skv_at
     namespace["__skv_concrete__"] = _skv_concrete
     namespace["__skv_scalarize__"] = _skv_scalarize
+    namespace["__skv_isinstance__"] = _skv_isinstance
     namespace["__skv_concrete_call__"] = _skv_concrete_call
     namespace["__skv_opaque_out__"] = _skv_opaque_out
     namespace["__skv_loop_iter__"] = _loop_iter
@@ -517,34 +773,58 @@ def _instrument(fn, depth, seen):
             callee = fn.__globals__.get(name)
             if getattr(callee, "__name__", None) in OPAQUE_CALLABLES:
                 continue  # will be sealed at the boundary, not entered
+            _inner = callee
+            while getattr(_inner, "__wrapped__", None) is not None:
+                _inner = _inner.__wrapped__  # peel stacked decorators
             if (
                 callable(callee)
                 and getattr(callee, "__closure__", None)
-                and inspect.isfunction(getattr(callee, "__wrapped__", None))
-                and not callee.__wrapped__.__closure__
+                and _inner is not callee
+                and inspect.isfunction(_inner)
+                and not _inner.__closure__
                 and callee.__name__ not in seen
             ):
                 # decorator-wrapped callee: instrument the inner function
                 seen.add(callee.__name__)
                 try:
-                    sub, sub_sites = _instrument(callee.__wrapped__, depth - 1, seen)
+                    sub, sub_sites = _instrument(_inner, depth - 1, seen)
                 except (OSError, TypeError, SyntaxError, KeyError, AttributeError):
                     continue
                 namespace[name] = sub
                 sites.append(f"{name}: decorator unwrapped")
                 sites.extend(f"{name}: {t}" for t in sub_sites)
                 continue
+            if inspect.isclass(callee):
+                try:
+                    twin, twin_sites = _instrument_class(callee, depth, seen)
+                except (OSError, TypeError, SyntaxError, KeyError, AttributeError):
+                    continue
+                if twin_sites:
+                    namespace[name] = twin
+                    sites.extend(f"{name}: {t}" for t in twin_sites)
+                continue
             if (
                 inspect.isfunction(callee)
                 and not getattr(callee, "__closure__", None)
                 and callee.__module__ not in (None, "builtins")
-                and callee.__name__ not in seen
             ):
-                seen.add(callee.__name__)
-                try:
-                    sub, sub_sites = _instrument(callee, depth - 1, seen)
-                except (OSError, TypeError, SyntaxError, KeyError, AttributeError):
-                    continue
+                if callee in _FN_MEMO:
+                    sub, sub_sites = _FN_MEMO[callee]
+                elif callee.__name__ in seen:
+                    continue  # cycle guard only; memo handles reuse
+                else:
+                    seen.add(callee.__name__)
+                    try:
+                        sub, sub_sites = _instrument(callee, depth - 1, seen)
+                    except (
+                        OSError,
+                        TypeError,
+                        SyntaxError,
+                        KeyError,
+                        AttributeError,
+                    ):
+                        continue
+                    _FN_MEMO[callee] = (sub, sub_sites)
                 if sub_sites:
                     namespace[name] = sub
                     sites.extend(f"{name}: {s}" for s in sub_sites)
@@ -552,3 +832,162 @@ def _instrument(fn, depth, seen):
     code = compile(tree, filename=f"<instrumented {fn.__name__}>", mode="exec")
     exec(code, namespace)
     return namespace[fdef.name], tuple(sites)
+
+
+_CLASS_TWINS = {}
+_FN_MEMO = {}  # instrumented-callee reuse across namespaces (class methods)
+
+
+def _instrument_class(C, depth, seen):
+    """A parallel twin of the class: every method instrumented, the
+    base twinned too so super() chains stay instrumented. Returns
+    (twin_or_C, sites)."""
+    if C in _CLASS_TWINS:
+        return _CLASS_TWINS[C]
+    if not inspect.isclass(C) or C is object or not _twinnable(C):
+        return C, ()
+    key = f"class:{C.__module__}.{C.__qualname__}"
+    if key in seen:
+        return C, ()
+    seen.add(key)
+
+    bases, base_sites = [], []
+    for b in C.__bases__:
+        if b is object:
+            bases.append(b)
+            continue
+        tb, ts = _instrument_class(b, depth, seen)
+        bases.append(tb)
+        base_sites.extend(ts)
+    if all(b is object for b in bases):
+        bases = [object]
+    members = {
+        k: v
+        for k, v in vars(C).items()
+        if k not in ("__dict__", "__weakref__")
+    }
+    slots = members.pop("__slots__", None)
+    if slots is not None:
+        # the twin gets a plain __dict__; slot descriptors would clash
+        for slot in ((slots,) if isinstance(slots, str) else slots):
+            members.pop(slot, None)
+    sites = [f"{C.__name__}(base): {t}" for t in base_sites]
+    patch_namespaces = []
+    for name, raw in list(members.items()):
+        if name in (
+            "__init_subclass__",
+            "__class_getitem__",
+            "__subclasshook__",
+            "__set_name__",
+            "__getattribute__",
+            "__getattr__",
+            "__setattr__",
+            "__delattr__",
+        ):
+            continue  # attribute plumbing: instrumenting it recurses
+        wrap, target = None, None
+        if isinstance(raw, staticmethod):
+            target, wrap = raw.__func__, staticmethod
+        elif isinstance(raw, classmethod):
+            target, wrap = raw.__func__, classmethod
+        elif inspect.isfunction(raw):
+            target = raw
+        elif callable(raw) and getattr(raw, "__wrapped__", None) is not None:
+            # decorator-wrapped method (xp_capabilities): peel to the
+            # inner function, same as module-level callees
+            inner = raw
+            while getattr(inner, "__wrapped__", None) is not None:
+                inner = inner.__wrapped__
+            if inspect.isfunction(inner):
+                target = inner
+        if target is None or not inspect.isfunction(target):
+            continue  # classmethod(GenericAlias) and similar non-functions
+        freevars = getattr(target.__code__, "co_freevars", ())
+        if any(v != "__class__" for v in freevars):
+            # a decorated method: the wrapper is a closure, but the
+            # real function underneath may not be -- peel it
+            inner = target
+            while getattr(inner, "__wrapped__", None) is not None:
+                inner = inner.__wrapped__
+            if inner is target and target.__closure__:
+                # wrappers without __wrapped__ (deprecation shims) hide
+                # the real method in a closure cell: find it by name
+                for cell in target.__closure__:
+                    try:
+                        held = cell.cell_contents
+                    except ValueError:
+                        continue
+                    if inspect.isfunction(held) and held.__name__ == name:
+                        inner = held
+                        break
+            if (
+                inner is not target
+                and inspect.isfunction(inner)
+                and all(
+                    v == "__class__"
+                    for v in getattr(inner.__code__, "co_freevars", ())
+                )
+            ):
+                target = inner
+            else:
+                chain = [target]
+                while getattr(chain[-1], "__wrapped__", None) is not None:
+                    chain.append(chain[-1].__wrapped__)
+                if any(
+                    "__class__"
+                    in getattr(getattr(f, "__code__", None), "co_freevars", ())
+                    for f in chain
+                ):
+                    # an unpeelable super()-using member: a parallel twin
+                    # would break its super chain. No twin for this class
+                    _CLASS_TWINS[C] = (C, ())
+                    return C, ()
+                continue  # real closures don't survive re-exec
+        try:
+            tree_fn = _instrument(target, depth - 1, seen)
+        except (OSError, TypeError, SyntaxError, KeyError, AttributeError):
+            continue
+        sub, sub_sites = tree_fn
+        if sub_sites:
+            members[name] = wrap(sub) if wrap else sub
+            patch_namespaces.append(sub.__globals__)
+            sites.extend(f"{C.__name__}.{name}: {t}" for t in sub_sites)
+    if not sites:
+        _CLASS_TWINS[C] = (C, ())
+        return C, ()
+    # methods carried over UNinstrumented but holding the original
+    # class in their __class__ cell would break super(): clone them
+    # with a fresh cell and rebind it to the twin
+    import types
+
+    rebind = []
+    for name, raw in list(members.items()):
+        target = raw.__func__ if isinstance(raw, (staticmethod, classmethod)) else raw
+        if (
+            inspect.isfunction(target)
+            and getattr(target.__code__, "co_freevars", ()) == ("__class__",)
+            and target.__closure__ is not None
+        ):
+            cell = types.CellType(None)
+            clone = types.FunctionType(
+                target.__code__,
+                target.__globals__,
+                target.__name__,
+                target.__defaults__,
+                (cell,),
+            )
+            clone.__kwdefaults__ = target.__kwdefaults__
+            wrapper_kind = type(raw) if isinstance(raw, (staticmethod, classmethod)) else None
+            members[name] = wrapper_kind(clone) if wrapper_kind else clone
+            rebind.append(cell)
+    try:
+        twin = type(C.__name__, tuple(bases), members)
+    except TypeError:
+        _CLASS_TWINS[C] = (C, ())
+        return C, ()
+    for cell in rebind:
+        cell.cell_contents = twin
+    for ns in patch_namespaces:
+        ns["__skv_class__"] = twin
+    _CLASS_TWINS[C] = (twin, tuple(sites))
+    return twin, tuple(sites)

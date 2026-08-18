@@ -76,7 +76,11 @@ _attach_ufunc_methods()
 # FUNCTION TABLE (non-UFUNCS)
 
 
-def _where(cond, a, b):
+def _where(cond, a=None, b=None):
+    if a is None and b is None:
+        # single-arg where is nonzero-position discovery: a concrete
+        # fact about this trace, like searchsorted's bisection
+        return np.where(np.asarray(Pair._value_of(cond), dtype=bool))
     domain = Pair._merge_domains(
         Pair._domain_of(cond), Pair._domain_of(a), Pair._domain_of(b)
     )
@@ -361,10 +365,202 @@ def _concrete_check(np_fn):
 def _astype(a, dtype, copy=True, **kwargs):
     if isinstance(a, Pair):
         return a.astype(dtype)
-    return np.astype(a, dtype, copy=copy, **kwargs)
+    if (
+        isinstance(a, np.ndarray)
+        and a.dtype == object
+        and any(isinstance(e, Pair) for e in a.ravel())
+    ):
+        return a  # traced elements: the cast is math-neutral
+    return np.astype(np.asarray(a), dtype, copy=copy, **kwargs)
 
 
+def _diag(v, k=0):
+    if not isinstance(v, Pair) or k != 0:
+        return np.diag(Pair._value_of(v), k)
+    i, j = axis_idx(0), axis_idx(1)
+    if v._axis_bounds is not None and len(v._axis_bounds) == 1:
+        # vector -> diagonal matrix: D[i, j] = v[i] when i == j else 0
+        n = v._axis_bounds[0]
+        return Pair(
+            np.diag(v.value),
+            sympy.Piecewise((v.formula, sympy.Eq(i, j)), (0, True)),
+            (n, n),
+            steps=(v,),
+        )
+    if v._axis_bounds is not None and len(v._axis_bounds) == 2:
+        # matrix -> its diagonal: d[i] = M[i, i]
+        lo = min(hi - lo for lo, hi in v._axis_bounds)
+        return Pair(
+            np.diag(v.value),
+            v.formula.subs(j, i),
+            (0, lo),
+            steps=(v,),
+        )
+    return np.diag(Pair._value_of(v), k)
+
+
+def _mean(a, axis=None, **kwargs):
+    if isinstance(a, Pair):
+        return a.mean(axis=axis)
+    if (
+        isinstance(a, np.ndarray)
+        and a.dtype == object
+        and axis is None
+        and any(isinstance(e, Pair) for e in a.ravel())
+    ):
+        return _sum(a) / a.size  # element dunders keep the trace
+    return np.mean(np.asarray(Pair._value_of(a), dtype=float), axis=axis, **kwargs)
+
+
+def _var(a, axis=None, ddof=0, correction=None, **kwargs):
+    if correction is not None:
+        ddof = correction  # the array-api spelling of ddof
+    if isinstance(a, Pair) and axis == 0 and len(a._axis_bounds or ()) == 1:
+        axis = None  # axis 0 of 1-D IS the whole array
+    if isinstance(a, Pair) and axis is not None:
+        raise NotImplementedError("var over one axis of N-D not supported yet")
+    if not isinstance(a, Pair) or axis is not None:
+        return np.var(np.asarray(Pair._value_of(a), dtype=float), axis=axis, ddof=ddof)
+    n = int(np.prod([hi - lo for lo, hi in a._axis_bounds]))
+    centered = a - a.mean()
+    return _sum(centered * centered) / (n - ddof)
+
+
+def _std(a, axis=None, ddof=0, correction=None, **kwargs):
+    return _var(a, axis=axis, ddof=ddof, correction=correction, **kwargs) ** 0.5
+
+
+def _median(a, axis=None, **kwargs):
+    if not isinstance(a, Pair) or axis is not None or len(a._axis_bounds or ()) != 1:
+        return np.median(np.asarray(Pair._value_of(a), dtype=float), axis=axis)
+    from ..pair import _GUARDS
+
+    vals = np.asarray(a.value, dtype=float)
+    order = np.argsort(vals, kind="stable")
+    sym = axis_idx(0)
+    # the selection is path-scoped: the sorted order holds for THIS
+    # input, recorded as explicit ordering preconditions
+    for k in range(len(order) - 1):
+        _GUARDS.append(
+            sympy.Le(
+                a.formula.subs(sym, int(order[k])),
+                a.formula.subs(sym, int(order[k + 1])),
+            )
+        )
+    mid = len(order) // 2
+    if len(order) % 2:
+        formula = a.formula.subs(sym, int(order[mid]))
+    else:
+        formula = (
+            a.formula.subs(sym, int(order[mid - 1]))
+            + a.formula.subs(sym, int(order[mid]))
+        ) / 2
+    return Pair(np.median(vals), formula, None, steps=(a,))
+
+
+def _quantile_like(np_fn, scale):
+    def entry(a, q, axis=None, **kwargs):
+        if not isinstance(a, Pair) or axis is not None or len(a._axis_bounds or ()) != 1:
+            return np_fn(np.asarray(Pair._value_of(a), dtype=float), q, axis=axis)
+        from ..pair import _GUARDS
+
+        vals = np.asarray(a.value, dtype=float)
+        order = np.argsort(vals, kind="stable")
+        sym = axis_idx(0)
+        for k in range(len(order) - 1):
+            _GUARDS.append(
+                sympy.Le(
+                    a.formula.subs(sym, int(order[k])),
+                    a.formula.subs(sym, int(order[k + 1])),
+                )
+            )
+
+        def one(qv):
+            pos = (len(order) - 1) * float(qv) / scale
+            lo, hi = int(np.floor(pos)), int(np.ceil(pos))
+            w = pos - lo
+            f_lo = a.formula.subs(sym, int(order[lo]))
+            f_hi = a.formula.subs(sym, int(order[hi]))
+            return (1 - w) * f_lo + w * f_hi
+
+        if np.ndim(q) == 0:
+            return Pair(np_fn(vals, q), one(q), None, steps=(a,))
+        formulas = [one(qv) for qv in np.asarray(q).ravel()]
+        out = np.empty(len(formulas), dtype=object)
+        values = np.asarray(np_fn(vals, q), dtype=float)
+        for k, f in enumerate(formulas):
+            out[k] = Pair(values[k], f, None, steps=(a,))
+        return out
+
+    return entry
+
+
+FUNCTION_TABLE[np.percentile] = _quantile_like(np.percentile, 100.0)
+FUNCTION_TABLE[np.quantile] = _quantile_like(np.quantile, 1.0)
+
+
+def _round(a, decimals=0, **kwargs):
+    if isinstance(a, Pair):
+        raise NotImplementedError("rounding a traced value changes the math")
+    return np.round(Pair._numeric(np.asarray(a), copy=False), decimals)
+
+
+FUNCTION_TABLE[np.round] = _round
+def _average(a, axis=None, weights=None, **kwargs):
+    if not isinstance(a, Pair):
+        arr = np.asarray(a)
+        if (
+            arr.dtype == object
+            and axis is None
+            and any(isinstance(e, Pair) for e in arr.ravel())
+        ):
+            elems = list(arr.ravel())
+            if weights is None:
+                return _sum(arr) / arr.size  # element dunders keep the trace
+            wvals = np.asarray(Pair._value_of(weights)).ravel()
+            num = elems[0] * float(wvals[0])
+            for e, wv in zip(elems[1:], wvals[1:]):
+                num = num + e * float(wv)
+            return num / float(wvals.sum())
+        return np.average(
+            Pair._numeric(arr, copy=False), axis=axis, weights=weights
+        )
+    if weights is None:
+        return a.mean(axis=axis)
+    w = weights
+    return _sum(a * w, axis=axis) / _sum(
+        w if isinstance(w, Pair) else Pair(np.asarray(w), Pair._formula_of(w), a._axis_bounds),
+        axis=axis,
+    )
+
+
+FUNCTION_TABLE[np.average] = _average
+FUNCTION_TABLE[np.median] = _median
+FUNCTION_TABLE[np.mean] = _mean
+FUNCTION_TABLE[np.var] = _var
+FUNCTION_TABLE[np.std] = _std
+def _broadcast_to(a, shape, **kwargs):
+    if not isinstance(a, Pair):
+        return np.broadcast_to(Pair._numeric(np.asarray(a), copy=False), shape)
+    shape = tuple(int(n) for n in (shape if np.iterable(shape) else (shape,)))
+    value = np.broadcast_to(a.value, shape).copy()
+    bounds = a._axis_bounds or ()
+    formula = Pair._shift_axes(a.formula, bounds, len(shape))
+    merged = tuple((0, n) for n in shape)
+    formula = Pair._pin_ones(formula, bounds, merged)
+    return Pair(value, formula, merged, steps=(a,))
+
+
+FUNCTION_TABLE[np.broadcast_to] = _broadcast_to
+FUNCTION_TABLE[np.diag] = _diag
 FUNCTION_TABLE[np.astype] = _astype
+FUNCTION_TABLE[np.linalg.matrix_rank] = _concrete_check(np.linalg.matrix_rank)
+FUNCTION_TABLE[np.linalg.svd] = lambda *a, **k: Pair._opaque_call(
+    np.linalg.svd, a, k
+)
+FUNCTION_TABLE[np.linalg.pinv] = lambda *a, **k: Pair._opaque_call(
+    np.linalg.pinv, a, k
+)
 FUNCTION_TABLE[np.allclose] = _concrete_check(np.allclose)
 FUNCTION_TABLE[np.isclose] = _concrete_check(np.isclose)
 

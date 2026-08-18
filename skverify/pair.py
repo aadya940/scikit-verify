@@ -529,6 +529,20 @@ class Pair:
             vals = np.unique(x)
             if len(vals) == 1:  # uniform: zeros, ones, full
                 return sympy.sympify(vals.item())  # constant field, clean
+            if x.dtype.kind in "fiub" and x.size <= 4096:
+                # a concrete operand (filter kernels, weights): a named
+                # table, values disclosed -- same treatment as gathers
+                name = f"const_{len(_OPAQUE)}"
+                table = sympy.IndexedBase(name)
+                letters = tuple(axis_idx(ax) for ax in range(x.ndim))
+                _OPAQUE.append(
+                    (
+                        name,
+                        (("table", "concrete"),),
+                        (str(table[letters]), f"{name} = {x.tolist()}"),
+                    )
+                )
+                return table[letters]
             raise NotImplementedError(
                 "raw non-uniform ndarray operand, wrap it: Pair.array(name, x)"
             )
@@ -588,10 +602,34 @@ class Pair:
                 )
         return tuple(merged)
 
+
+    @staticmethod
+    def _defers(other):
+        """Pair op object-array-of-Pairs: defer to numpy's object loop
+        (elementwise dunders), the honest per-element route."""
+        return (
+            isinstance(other, np.ndarray)
+            and other.dtype == object
+            and any(isinstance(e, Pair) for e in other.ravel())
+        )
+
     @staticmethod
     def _binary(inputs, fwd, rev, self):
         a, b = inputs
         return fwd(a, b) if a is self else rev(b, a)
+
+    @staticmethod
+    def _numeric(v, copy=True):
+        """Object-dtype numeric arrays coerce to float (the dtype duck
+        leaks into allocations); anything else passes through."""
+        if isinstance(v, np.ndarray):
+            if v.dtype == object:
+                try:
+                    return np.asarray(v, dtype=float)
+                except (TypeError, ValueError):
+                    pass
+            return np.array(v, copy=True) if copy else v
+        return v
 
     @staticmethod
     def _value_of(x):
@@ -731,29 +769,140 @@ class Pair:
         value = self.value[key]
         if isinstance(value, np.ndarray):
             value = value.copy()  # slices are value-semantic: no view aliasing
-        return self._remap(
+        result = self._remap(
             value=value,  # raw key: numpy interprets it independently
             index_map=index_map,
             axis_bounds=tuple(new_bounds),  # u[2, 3] -> (), remap makes it scalar
         )
+        if all(isinstance(e, tuple) for e in entries):
+            # chained writes (dk[1:-1][mask] = v) must reach the parent:
+            # remember where this slice came from
+            result._slice_of = (self, entries)
+        return result
 
     def __setitem__(self, key, val):
         # u[2:5] = v: the formula becomes a scatter, old rule outside the
         # written region, the value's rule (re-indexed) inside it
         if self._axis_bounds is None:
             raise TypeError("scalar Pair does not support item assignment")
+
+        origin = getattr(self, "_slice_of", None)
+        if origin is not None:
+            # write-through: translate this write onto the parent so the
+            # chained idiom dk[1:-1][mask] = v stays correct
+            parent, entries = origin
+            parent[Pair._compose_key(entries, key, self)] = val
+            self.__dict__["_slice_of"] = None  # local write follows below
+
+        def is_idx_arr(k):
+            return (
+                isinstance(k, (list, np.ndarray))
+                and np.asarray(k).dtype.kind in "iu"
+                and np.asarray(k).ndim >= 1
+            )
+
+        parts = key if isinstance(key, tuple) else (key,)
+        if (
+            len(parts) == 1
+            and isinstance(parts[0], np.ndarray)
+            and parts[0].dtype == bool
+        ):
+            # concrete boolean mask with any value shape: the selected
+            # positions are trace facts; decompose into scalar writes
+            positions = np.nonzero(parts[0])
+            parts = (positions[0],) if len(positions) == 1 else positions
+        lengths_all = tuple(hi - lo for lo, hi in self._axis_bounds)
+
+        def is_full_slice(k, ax):
+            return isinstance(k, slice) and k.indices(lengths_all[ax]) == (
+                0,
+                lengths_all[ax],
+                1,
+            )
+
+        if (
+            sum(is_idx_arr(k) for k in parts) == 1
+            and any(
+                is_full_slice(k, i) for i, k in enumerate(parts)
+            )
+            and all(
+                is_idx_arr(k) or is_full_slice(k, i)
+                for i, k in enumerate(parts)
+            )
+        ):
+            # one index array among full slices: decompose per element,
+            # each row-write handled by the ordinary scatter machinery
+            ax = next(i for i, k in enumerate(parts) if is_idx_arr(k))
+            arr = np.asarray(parts[ax]).ravel()
+            scalar_val = np.ndim(Pair._value_of(val)) == 0
+            for k_pos, p in enumerate(arr):
+                sub = tuple(
+                    int(p) if i == ax else parts[i] for i in range(len(parts))
+                )
+                self[sub if len(sub) > 1 else sub[0]] = (
+                    val if scalar_val else val[k_pos]
+                )
+            return
+        if any(is_idx_arr(k) for k in parts) and all(
+            is_idx_arr(k) or isinstance(k, (int, np.integer)) for k in parts
+        ):
+            # scatter through index arrays: concrete positions, so
+            # decompose into scalar writes (p[rows, cols] = v)
+            arrs = [np.asarray(k) for k in parts if is_idx_arr(k)]
+            arrays = np.broadcast_arrays(*arrs)
+            flat = [a.ravel() for a in arrays]
+            n = flat[0].size
+            for pos in range(n):
+                it = iter(flat)
+                target = tuple(
+                    int(k) if isinstance(k, (int, np.integer)) else int(next(it)[pos])
+                    for k in parts
+                )
+                target = target if len(target) > 1 else target[0]
+                if np.ndim(Pair._value_of(val)) == 0:
+                    self[target] = val
+                else:
+                    self[target] = val[pos]
+            return
         if isinstance(key, Pair):
             if Pair._is_condition(key.formula):
                 if isinstance(val, (Pair, np.ndarray)) and np.ndim(Pair._value_of(val)):
-                    raise NotImplementedError(
-                        "masked assignment with an array value is data-dependent"
-                    )
+                    # concrete mask, array value: positions are trace
+                    # facts, conditions become per-position guards, and
+                    # the write decomposes scalar by scalar
+                    mask = np.asarray(key.value, dtype=bool)
+                    selected = np.nonzero(mask)[0]
+                    n_val = np.size(Pair._value_of(val))
+                    if n_val != selected.size:
+                        raise ValueError(
+                            f"NumPy boolean array indexing assignment "
+                            f"cannot assign {n_val} input values to the "
+                            f"{selected.size} output values where the mask is true"
+                        )
+                    sym = axis_idx(0)
+                    for pos in range(mask.size):
+                        cond = key.formula.subs(sym, pos)
+                        _GUARDS.append(cond if mask[pos] else sympy.Not(cond))
+                    for k, pos in enumerate(selected):
+                        self[int(pos)] = val[k]
+                    return
                 self.value[key.value] = Pair._value_of(val)
                 prior = self.formula
                 self.formula = sympy.Piecewise(
                     (Pair._formula_of(val), key.formula), (prior, True)
                 )
                 self._record_write(prior, key, val)
+                return
+            kv = np.asarray(key.value)
+            if kv.dtype.kind in "iu" or (
+                kv.dtype.kind == "f" and np.all(kv == np.round(kv))
+            ):
+                # a traced index (vector or scalar): the positions are
+                # concrete trace facts (argsort outputs and friends)
+                if kv.ndim == 0:
+                    self[int(kv)] = val
+                else:
+                    self[kv.astype(int)] = val
                 return
             raise NotImplementedError("only boolean Pair keys are supported")
 
@@ -821,6 +970,34 @@ class Pair:
             self.formula = val_formula
         self._record_write(prior, val)
 
+    @staticmethod
+    def _compose_key(entries, key, view):
+        """Map a key on the sliced view to the parent's coordinates:
+        entry (start, stop, step) turns index i into start + step*i."""
+        parts = key if isinstance(key, tuple) else (key,)
+        parts = parts + (slice(None),) * (len(entries) - len(parts))
+        out = []
+        for ax, (entry, k) in enumerate(zip(entries, parts)):
+            start, stop, step = entry
+            length = len(range(start, stop, step))
+            if isinstance(k, (int, np.integer)):
+                out.append(start + step * int(k))
+            elif isinstance(k, slice):
+                a, b, c = k.indices(length)
+                out.append(slice(start + step * a, start + step * b, step * c))
+            elif isinstance(k, np.ndarray) and k.dtype == bool:
+                out.append(start + step * np.nonzero(k)[0])
+            elif isinstance(k, Pair) and Pair._is_condition(k.formula):
+                mask = np.asarray(k.value, dtype=bool)
+                out.append(start + step * np.nonzero(mask)[0])
+            elif isinstance(k, (list, np.ndarray)):
+                out.append(start + step * np.asarray(k, dtype=int))
+            else:
+                raise NotImplementedError(
+                    "write-through slice: unsupported sub-key"
+                )
+        return tuple(out) if len(out) > 1 else out[0]
+
     def _record_write(self, prior_formula, *operands):
         # an in-place write mutates formula; the pre-write state becomes
         # a parent node so the DAG keeps the whole derivation
@@ -886,6 +1063,8 @@ class Pair:
         )
 
     def __add__(self, other):
+        if Pair._defers(other):
+            return NotImplemented
         mine, theirs, merged = Pair._broadcast(self, other)
         return Pair(
             value=self.value + Pair._value_of(other),
@@ -894,10 +1073,14 @@ class Pair:
             steps=Pair._steps_of(self, other),
         )
 
-    def __radd__(self, other):  # handles  2 + u
+    def __radd__(self, other):
+        if Pair._defers(other):
+            return NotImplemented  # handles  2 + u
         return self.__add__(other)
 
     def __sub__(self, other):
+        if Pair._defers(other):
+            return NotImplemented
         mine, theirs, merged = Pair._broadcast(self, other)
         return Pair(
             value=self.value - Pair._value_of(other),
@@ -906,7 +1089,9 @@ class Pair:
             steps=Pair._steps_of(self, other),
         )
 
-    def __rsub__(self, other):  # handles  2 - u   (order matters!)
+    def __rsub__(self, other):
+        if Pair._defers(other):
+            return NotImplemented  # handles  2 - u   (order matters!)
         mine, theirs, merged = Pair._broadcast(self, other)
         return Pair(
             value=Pair._value_of(other) - self.value,
@@ -916,6 +1101,8 @@ class Pair:
         )
 
     def __mul__(self, other):
+        if Pair._defers(other):
+            return NotImplemented
         mine, theirs, merged = Pair._broadcast(self, other)
         return Pair(
             value=self.value * Pair._value_of(other),
@@ -927,6 +1114,8 @@ class Pair:
     __rmul__ = __mul__
 
     def __mod__(self, other):
+        if Pair._defers(other):
+            return NotImplemented
         mine, theirs, merged = Pair._broadcast(self, other)
         return Pair(
             value=self.value % Pair._value_of(other),
@@ -936,6 +1125,8 @@ class Pair:
         )
 
     def __rmod__(self, other):
+        if Pair._defers(other):
+            return NotImplemented
         mine, theirs, merged = Pair._broadcast(self, other)
         return Pair(
             value=Pair._value_of(other) % self.value,
@@ -1073,6 +1264,97 @@ class Pair:
     def flags(self):
         return np.asarray(self.value).flags
 
+    def mean(self, axis=None, **kwargs):
+        from .maps.numpy import _sum
+
+        if self._axis_bounds is None:
+            return self
+        if axis is None:
+            n = int(np.prod([hi - lo for lo, hi in self._axis_bounds]))
+            return _sum(self) / n
+        k = axis % len(self._axis_bounds)
+        lo, hi = self._axis_bounds[k]
+        return _sum(self, axis=k) / (hi - lo)
+
+    def sum(self, axis=None, **kwargs):
+        from .maps.numpy import _sum
+
+        return _sum(self, axis=axis)
+
+    def max(self, axis=None, **kwargs):
+        return np.maximum.reduce(self, axis=axis, **kwargs)
+
+    def min(self, axis=None, **kwargs):
+        return np.minimum.reduce(self, axis=axis, **kwargs)
+
+    @property
+    def real(self):
+        value = np.real(self.value)
+        formula = self.formula if np.isrealobj(self.value) else sympy.re(self.formula)
+        return Pair(value, formula, self._axis_bounds, steps=(self,))
+
+    @property
+    def imag(self):
+        if np.isrealobj(self.value):
+            return Pair(
+                np.imag(self.value), sympy.Integer(0), self._axis_bounds, steps=(self,)
+            )
+        return Pair(
+            np.imag(self.value), sympy.im(self.formula), self._axis_bounds, steps=(self,)
+        )
+
+    def conj(self):
+        if np.isrealobj(self.value):
+            return self
+        return Pair(
+            np.conj(self.value),
+            sympy.conjugate(self.formula),
+            self._axis_bounds,
+            steps=(self,),
+        )
+
+    def setflags(self, **kwargs):
+        pass  # writeability bookkeeping; the traced copy is ours
+
+    def __index__(self):
+        # a Pair used AS AN INDEX is bookkeeping (positions are trace
+        # facts, like find_interval); non-integral values refuse
+        v = self.value
+        if np.ndim(v) == 0 and float(v) == int(v):
+            return int(v)
+        raise TypeError("only integral scalar Pairs can index")
+
+    def copy(self, order="C"):
+        value = self.value.copy() if hasattr(self.value, "copy") else self.value
+        return Pair(value, self.formula, self._axis_bounds, steps=(self,))
+
+    def var(self, axis=None, ddof=0, **kwargs):
+        from .maps.numpy import _var
+
+        return _var(self, axis=axis, ddof=ddof)
+
+    def std(self, axis=None, ddof=0, **kwargs):
+        from .maps.numpy import _std
+
+        return _std(self, axis=axis, ddof=ddof)
+
+    @property
+    def flat(self):
+        # numpy's flat iterator: our flattened view suffices for the
+        # read patterns library code uses
+        return self.ravel()
+
+    def ravel(self, order="C"):
+        # flattening is a layout-preserving reshape
+        return self.reshape((int(np.size(self.value)),))
+
+    def flatten(self, order="C"):
+        return self.ravel()
+
+    def squeeze(self, axis=None):
+        # removing extent-1 axes is a layout-preserving reshape
+        return self.reshape(np.squeeze(np.asarray(self.value), axis=axis).shape)
+
     def astype(self, dtype=None, copy=True, **kwargs):
         # float cast is math-neutral; a real reinterpretation would lie
         if dtype is not None and np.dtype(dtype).kind not in "fc":
@@ -1086,12 +1368,17 @@ class Pair:
 
     @property
     def dtype(self):
-        # object, deliberately: numpy cast branches like ret.dtype.type(x)
-        # become passthroughs instead of float(Pair) deaths. The concrete
-        # lane's real dtype is np.asarray(self.value).dtype if ever needed.
-        return np.dtype(object)
+        # the TRUTH: the concrete lane's numeric dtype. (An object duck
+        # lived here once, for numpy's mean cast branch -- Pair.mean made
+        # it obsolete, and the lie leaked into every finfo/kind gate.)
+        value = np.asarray(self.value)
+        if value.dtype == object:
+            return np.dtype(float)
+        return value.dtype
 
-    def __truediv__(self, other):  # self / other
+    def __truediv__(self, other):
+        if Pair._defers(other):
+            return NotImplemented  # self / other
         mine, theirs, merged = Pair._broadcast(self, other)
         return Pair(
             value=self.value / Pair._value_of(other),
@@ -1100,7 +1387,9 @@ class Pair:
             steps=Pair._steps_of(self, other),
         )
 
-    def __rtruediv__(self, other):  # other / self
+    def __rtruediv__(self, other):
+        if Pair._defers(other):
+            return NotImplemented  # other / self
         mine, theirs, merged = Pair._broadcast(self, other)
         return Pair(
             value=Pair._value_of(other) / self.value,
@@ -1109,7 +1398,9 @@ class Pair:
             steps=Pair._steps_of(self, other),
         )
 
-    def __pow__(self, other):  # self ** other
+    def __pow__(self, other):
+        if Pair._defers(other):
+            return NotImplemented  # self ** other
         mine, theirs, merged = Pair._broadcast(self, other)
         return Pair(
             value=self.value ** Pair._value_of(other),
@@ -1118,7 +1409,9 @@ class Pair:
             steps=Pair._steps_of(self, other),
         )
 
-    def __rpow__(self, other):  # other ** self
+    def __rpow__(self, other):
+        if Pair._defers(other):
+            return NotImplemented  # other ** self
         mine, theirs, merged = Pair._broadcast(self, other)
         return Pair(
             value=Pair._value_of(other) ** self.value,
@@ -1157,6 +1450,26 @@ class Pair:
             return self  # numpy's 0-d unwrap idiom, vals[()]
         if self._axis_bounds is None:
             raise TypeError("scalar Pair is not subscriptable")
+        if isinstance(key, Pair) and Pair._is_condition(key.formula):
+            # mask gather u[u > 0]: the mask's VALUE fixes the selected
+            # positions (trace facts); the mask's CONDITIONS become
+            # per-position preconditions, so the certificate is honest
+            # about the path
+            mask = np.asarray(key.value, dtype=bool)
+            sym = axis_idx(0)
+            for pos in range(mask.size):
+                cond = key.formula.subs(sym, pos)
+                _GUARDS.append(cond if mask[pos] else sympy.Not(cond))
+            idx = np.nonzero(mask)[0]
+            if idx.size == 0:
+                value = np.asarray(self.value)[mask]
+                return Pair(
+                    value,
+                    self.formula,
+                    ((0, 0),) + tuple(self._axis_bounds[1:]),
+                    steps=(self,),
+                )
+            return self._axis_gather(0, idx, mask)
         parts = key if isinstance(key, tuple) else (key,)
         if any(k is None for k in parts):
             # w[:, None]: newaxis only inserts extent-1 axes -- apply the
@@ -1182,8 +1495,79 @@ class Pair:
         parts = key if isinstance(key, tuple) else (key,)
         if not any(is_index_array(k) for k in parts):
             return None
+        if any(
+            is_index_array(k) and np.asarray(k).ndim == 0 for k in parts
+        ):  # 0-d index arrays are ints in disguise
+            norm = tuple(
+                int(np.asarray(k))
+                if is_index_array(k) and np.asarray(k).ndim == 0
+                else k
+                for k in parts
+            )
+            return self[norm if len(norm) > 1 else norm[0]]
+
+        def is_full(k):
+            return isinstance(k, slice) and k == slice(None)
+
         if not all(is_index_array(k) for k in parts):
+            if sum(is_index_array(k) for k in parts) == 1 and all(
+                is_index_array(k) or is_full(k) for k in parts
+            ):
+                # X[:, cols]: gather along ONE axis, others untouched
+                ax = next(
+                    i for i, k in enumerate(parts) if is_index_array(k)
+                )
+                idx = np.asarray(parts[ax])
+                if idx.ndim == 1 and 1 <= idx.size <= 4096:
+                    return self._axis_gather(ax, idx, key)
             raise NotImplementedError("mixed fancy/slice indexing not supported")
+        if len(parts) == 1:
+            idx = np.asarray(parts[0])
+            if idx.ndim == 1 and idx.size == 1:
+                return self._axis_gather(0, idx, key)
+            if idx.ndim == 1 and 2 <= idx.size <= 4096:
+                strides = np.diff(idx)
+                if len(set(strides.tolist())) != 1:
+                    # irregular gather (pivot permutations, argsort):
+                    # ONE rule through a recorded index table,
+                    # u[[0, 1, 3]] -> u[gather_0[i]], table disclosed
+                    name = f"gather_{len(_OPAQUE)}"
+                    table = sympy.IndexedBase(name)
+                    sym = axis_idx(0)
+                    formula = self.formula.subs(sym, table[sym])
+                    _OPAQUE.append(
+                        (
+                            name,
+                            (("table", "concrete"),),
+                            (str(table[sym]), f"{name} = {idx.tolist()}"),
+                        )
+                    )
+                    value = self.value[idx]
+                    return Pair(
+                        value.copy() if isinstance(value, np.ndarray) else value,
+                        formula,
+                        ((0, int(idx.size)),) + tuple(self._axis_bounds[1:]),
+                        steps=(self,),
+                    )
+                if True:
+                    # affine gather: u[[3,2,1,0]] is the remap i -> 3 - i,
+                    # same machinery as strided slices, ONE indexed formula
+                    d, start = int(strides[0]), int(idx[0])
+                    sym = axis_idx(0)
+                    index_map = {sym: d * sym + start}
+                    index_map.update(
+                        {
+                            axis_idx(ax): axis_idx(ax)
+                            for ax in range(1, len(self._axis_bounds))
+                        }
+                    )
+                    value = self.value[np.asarray(parts[0])]
+                    return self._remap(
+                        value=value.copy() if isinstance(value, np.ndarray) else value,
+                        index_map=index_map,
+                        axis_bounds=((0, int(idx.size)),)
+                        + tuple(self._axis_bounds[1:]),
+                    )
         arrays = np.broadcast_arrays(*[np.asarray(k) for k in parts])
         out = np.empty(arrays[0].shape, dtype=object)
         for pos in np.ndindex(arrays[0].shape):
@@ -1191,35 +1575,145 @@ class Pair:
             out[pos] = self[idx if len(idx) > 1 else idx[0]]
         return out
 
+    def _axis_gather(self, ax, idx, key):
+        """Gather along one axis: affine indices remap, irregular ones
+        go through a recorded table."""
+        sym = axis_idx(ax)
+        strides = np.diff(idx) if idx.size >= 2 else np.array([1])
+        value = self.value[key]
+        if isinstance(value, np.ndarray):
+            value = value.copy()
+        bounds = (
+            tuple(self._axis_bounds[:ax])
+            + ((0, int(idx.size)),)
+            + tuple(self._axis_bounds[ax + 1 :])
+        )
+        if len(set(strides.tolist())) == 1:
+            d, start = int(strides[0]), int(idx[0])
+            index_map = {sym: d * sym + start}
+            index_map.update(
+                {
+                    axis_idx(a): axis_idx(a)
+                    for a in range(len(self._axis_bounds))
+                    if a != ax
+                }
+            )
+            return self._remap(value, index_map, bounds)
+        name = f"gather_{len(_OPAQUE)}"
+        table = sympy.IndexedBase(name)
+        formula = self.formula.subs(sym, table[sym])
+        _OPAQUE.append(
+            (
+                name,
+                (("table", "concrete"),),
+                (str(table[sym]), f"{name} = {idx.tolist()}"),
+            )
+        )
+        return Pair(value, formula, bounds, steps=(self,))
+
     def __array_ufunc__(self, ufunc, method, *inputs, out=None, **kwargs):
         if out is not None:
             raise NotImplementedError("out= is not supported (mutation)")
         if method == "reduce" and ufunc in (np.maximum, np.minimum, np.add):
             a = inputs[0]
             axis = kwargs.get("axis", 0)
-            if (
+            full = axis is None or (
                 isinstance(a, Pair)
                 and a._axis_bounds is not None
                 and len(a._axis_bounds) == 1
-                and axis in (0, None)
-            ):
-                if ufunc is np.add:
+                and axis == 0
+            )
+            if isinstance(a, Pair) and a._axis_bounds is not None and full:
+                if ufunc is np.add and len(a._axis_bounds) == 1:
                     from .maps.numpy import _sum
 
                     return _sum(a)
-                lo, hi = a._axis_bounds[0]
-                if hi - lo <= 4096:
-                    sym = axis_idx(0)
+                extents = [hi - lo for lo, hi in a._axis_bounds]
+                if ufunc is not np.add and int(np.prod(extents)) <= 4096:
+                    letters = [
+                        axis_idx(ax) for ax in range(len(a._axis_bounds))
+                    ]
                     op = sympy.Max if ufunc is np.maximum else sympy.Min
+                    elems = [
+                        a.formula.subs(
+                            dict(zip(letters, pos)), simultaneous=True
+                        )
+                        for pos in np.ndindex(*extents)
+                    ]
                     formula = op(
-                        *[a.formula.subs(sym, k) for k in range(lo, hi)],
+                        *elems,
                         evaluate=False,  # canonical sorting of n large args is quadratic
                     )
                     return Pair(
-                        ufunc.reduce(a.value), formula, None, steps=(a,)
+                        ufunc.reduce(a.value, axis=None),
+                        formula,
+                        None,
+                        steps=(a,),
                     )
+            if (
+                isinstance(a, Pair)
+                and a._axis_bounds is not None
+                and isinstance(axis, int)
+                and ufunc is not np.add
+            ):
+                bounds = a._axis_bounds
+                k_ax = axis % len(bounds)
+                lo, hi = bounds[k_ax]
+                if hi - lo <= 4096:
+                    # per-axis Max/Min: bind one letter over its concrete
+                    # range, survivors renumber down (the letter invariant)
+                    rename = {
+                        axis_idx(ax): axis_idx(ax - 1)
+                        for ax in range(k_ax + 1, len(bounds))
+                    }
+                    op = sympy.Max if ufunc is np.maximum else sympy.Min
+                    elems = [
+                        a.formula.subs(
+                            {axis_idx(k_ax): v, **rename}, simultaneous=True
+                        )
+                        for v in range(lo, hi)
+                    ]
+                    formula = op(*elems, evaluate=False)
+                    new_bounds = bounds[:k_ax] + bounds[k_ax + 1 :]
+                    return Pair(
+                        ufunc.reduce(a.value, axis=k_ax),
+                        formula,
+                        new_bounds or None,
+                        steps=(a,),
+                    )
+            if (
+                isinstance(a, np.ndarray)
+                and a.dtype == object
+                and a.size <= 4096
+                and all(isinstance(e, Pair) for e in a.ravel())
+                and ufunc is not np.add
+            ):
+                op = sympy.Max if ufunc is np.maximum else sympy.Min
+                formula = op(
+                    *[e.formula for e in a.ravel()], evaluate=False
+                )
+                return Pair(
+                    ufunc.reduce(Pair._value_of(a), axis=None),
+                    formula,
+                    None,
+                    steps=tuple(a.ravel()),
+                )
         if method != "__call__" or kwargs.get("out") is not None:
             raise NotImplementedError(f"{ufunc.__name__}.{method} not supported")
+
+        if any(
+            isinstance(x, np.ndarray)
+            and x.dtype == object
+            and any(isinstance(e, Pair) for e in x.ravel())
+            for x in inputs
+        ):
+            # a decompressed operand: decompress the Pair side too and
+            # let numpy's object loop run element by element through
+            # the attached methods -- honest per-element formulas
+            conv = [
+                np.asarray(x) if isinstance(x, Pair) else x for x in inputs
+            ]
+            return ufunc(*conv, **kwargs)
 
         if ufunc is np.add:
             return Pair._binary(inputs, Pair.__add__, Pair.__radd__, self)
@@ -1246,7 +1740,7 @@ class Pair:
                 )
             return Pair._opaque_call(ufunc, inputs, kwargs)
 
-        values = [Pair._value_of(x) for x in inputs]
+        values = [Pair._numeric(Pair._value_of(x), copy=False) for x in inputs]
         domain = Pair._merge_domains(*(Pair._domain_of(x) for x in inputs))
         formulas = [
             Pair._shift_axes(
@@ -1280,21 +1774,16 @@ class Pair:
         # the routine gets COPIES: overwrite_ab-style scribbling stays
         # off the traced values, and the snapshot guard keeps everyone
         # honest about it
-        def _numeric(v):
-            if isinstance(v, np.ndarray):
-                if v.dtype == object:
-                    try:  # our dtype duck leaks into allocations
-                        return np.asarray(v, dtype=float)
-                    except (TypeError, ValueError):
-                        return np.array(v, copy=True)
-                return np.array(v, copy=True)
-            return v
-
-        values = [_numeric(Pair._value_of(a)) for a in args]
+        values = [Pair._numeric(Pair._value_of(a)) for a in args]
         kwvalues = {
             k: (np.array(v, copy=True) if isinstance(v, np.ndarray) else v)
             for k, v in ((k, Pair._value_of(v)) for k, v in kwargs.items())
         }
+        # contracts must judge the INPUTS, not overwrite_*-mutated buffers
+        pristine = [
+            np.array(v, copy=True) if isinstance(v, np.ndarray) else v
+            for v in values
+        ]
         result = func(*values, **kwvalues)
         after = [
             np.asarray(a.value).tobytes()
@@ -1342,7 +1831,7 @@ class Pair:
                 else:
                     outs.append(res)
             _OPAQUE.append(
-                check_call(fname, values, result)
+                check_call(fname, pristine, result)
                 + ((f"{fname}_{len(_OPAQUE)}_*", str(call)),)
             )
             return tuple(outs)
@@ -1358,7 +1847,7 @@ class Pair:
             formula = call
             domain = None
         _OPAQUE.append(
-            check_call(fname, values, result) + ((str(formula), str(call)),)
+            check_call(fname, pristine, result) + ((str(formula), str(call)),)
         )
         return Pair(result, formula, domain=domain, steps=Pair._steps_of(*args))
 
@@ -1373,8 +1862,18 @@ class Pair:
         inner = getattr(func, "__wrapped__", None)
         if inner is not None:
             # pure-Python numpy: run its real body on the Pairs; slices and
-            # arithmetic inside dispatch back here, formulas unrolled per element
-            return inner(*args, **kwargs)
+            # arithmetic inside dispatch back here, formulas unrolled per
+            # element. A body that walls (finfo on the object dtype, type
+            # gates) retries as an instrumented twin carrying the rewrites
+            try:
+                return inner(*args, **kwargs)
+            except (TypeError, ValueError, AttributeError, NotImplementedError):
+                from .instrument import runtime_twin
+
+                twin = runtime_twin(inner)
+                if twin is inner:
+                    raise
+                return twin(*args, **kwargs)
         return Pair._opaque_call(func, args, kwargs)
 
 

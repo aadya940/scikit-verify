@@ -89,10 +89,20 @@ class TestMaskedWrite:
         assert m.formula == sympy.Piecewise((0.0, sympy.Gt(M[I], 2.5)), (M[I], True))
         assert np.allclose(m.value, [0, 1, 2, 0, 0])
 
-    def test_array_under_mask_refused(self):
+    def test_array_under_mask_size_mismatch_raises(self):
         m = Pair.array("m", np.arange(5.0))
-        with pytest.raises(NotImplementedError):
+        with pytest.raises(ValueError):  # numpy semantics: 5 values, 2 slots
             m[m > 2.5] = np.arange(5.0)
+
+    def test_array_under_mask_writes_with_guards(self):
+        from skverify.pair import _GUARDS
+
+        m = Pair.array("m", np.arange(5.0))
+        v = np.exp(Pair.array("v", np.arange(2.0)))
+        _GUARDS.clear()
+        m[m > 2.5] = v
+        assert np.allclose(m.value, [0.0, 1.0, 2.0, 1.0, np.e])
+        assert len(_GUARDS) == 5  # one condition instance per position
 
 
 class TestSetitem2D:
@@ -186,3 +196,22 @@ class TestKernels:
         out = to_sympy(dirichlet, np.arange(5.0), 7.0)
         assert out.value[0] == 7.0 and out.value[4] == 7.0
         assert np.allclose(out.value[1:4], [1, 2, 3])
+
+
+class TestWriteThrough:
+    def test_chained_slice_write_reaches_parent(self):
+        # the pchip idiom: dk[1:-1][mask] = v must update dk, exactly
+        # as numpy views do
+        dk = Pair.array("d", np.zeros(6))
+        m = np.array([True, False, True, False])
+        dk[1:-1][m] = 7.0
+        ref = np.zeros(6)
+        ref[1:-1][m] = 7.0
+        assert np.allclose(np.asarray(Pair._value_of(dk.value), dtype=float), ref)
+
+    def test_chained_int_write(self):
+        dk = Pair.array("d", np.zeros(6))
+        dk[2:][1] = 5.0
+        ref = np.zeros(6)
+        ref[2:][1] = 5.0
+        assert np.allclose(np.asarray(Pair._value_of(dk.value), dtype=float), ref)

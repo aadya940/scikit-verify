@@ -54,9 +54,10 @@ class TestConstantFields:
         assert z.formula == sympy.Integer(0)
         assert z.domain == (0, 10)
 
-    def test_nonuniform_ndarray_refused(self):
-        with pytest.raises(NotImplementedError):
-            np.array([1.0, 2.0, 3.0]) + make(3)
+    def test_nonuniform_ndarray_becomes_named_table(self):
+        r = np.array([1.0, 2.0, 3.0]) + make(3)
+        assert "const_" in str(r.formula)
+        assert np.allclose(r.value, np.array([1.0, 2.0, 3.0]) + make(3).value)
 
     def test_unmapped_function_traces_with_guards(self):
         # unmapped + pure-Python: numpy's body runs on Pairs; its internal
