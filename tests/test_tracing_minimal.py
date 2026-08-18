@@ -78,10 +78,11 @@ class TestWrappedFallback:
         assert isinstance(s.formula, sympy.Sum)
 
     def test_dot_traces_as_inner_product(self):
-        # np.dot's python wrapper runs; decompression + dunders do the rest
+        # np.dot routes to the matmul contraction: one Sum, not unrolled
         u = make()
         r = np.dot(u, u)
-        assert r.formula == U[0] ** 2 + U[1] ** 2 + U[2] ** 2 + U[3] ** 2
+        k = sympy.Symbol("k", integer=True)
+        assert r.formula == sympy.Sum(U[k] ** 2, (k, 0, 3))
         assert r.value == np.dot(u.value, u.value)
 
     def test_to_sympy_recompresses_unrolled_results(self):
@@ -211,3 +212,20 @@ class TestArrayCoercionEdges:
         obj = np.asarray(x)
         assert obj.shape == ()
         assert isinstance(obj[()], Pair)
+
+
+class TestRepr:
+    def test_scalar(self):
+        p = Pair(2.0, sympy.Symbol("a"))
+        assert repr(p) == "Pair(a)"
+
+    def test_array_shows_domain(self):
+        u = Pair.array("u", np.arange(4.0))
+        assert repr(u) == "Pair(u[i], domain=(0, 4))"
+
+    def test_long_formula_truncates(self):
+        i = sympy.Symbol("i", integer=True)
+        long = sum(sympy.exp(U[i] + n) for n in range(10))
+        r = Pair(np.arange(4.0), long, (0, 4))
+        assert len(repr(r)) <= 90
+        assert "..." in repr(r)

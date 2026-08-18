@@ -61,7 +61,7 @@ def _skv_empty(shape, dtype=None, **kwargs):
 def _skv_neutral(a, dtype=None, **kwargs):
     if isinstance(a, Pair):
         value = np.ascontiguousarray(a.value, dtype=dtype)
-        return Pair(value, a.formula, a._axis_bounds, steps=a.steps)
+        return Pair(value, a.formula, a._axis_bounds, steps=(a,))
     return np.asarray(a, dtype=dtype)
 
 
@@ -72,17 +72,17 @@ def _skv_method(name, obj, *args, **kwargs):
         dtype = args[0] if args else kwargs.get("dtype")
         if dtype is not None and np.dtype(dtype).kind not in "fc":
             raise NotImplementedError("astype to non-float would change the math")
-        return Pair(obj.value, obj.formula, obj._axis_bounds, steps=obj.steps)
+        return Pair(obj.value, obj.formula, obj._axis_bounds, steps=(obj,))
     if name == "toarray":
         return Pair(
             np.asarray(obj.value.toarray()),
             obj.formula,
             obj._axis_bounds,
-            steps=obj.steps,
+            steps=(obj,),
         )
     if name == "copy":
         value = obj.value.copy() if hasattr(obj.value, "copy") else obj.value
-        return Pair(value, obj.formula, obj._axis_bounds, steps=obj.steps)
+        return Pair(value, obj.formula, obj._axis_bounds, steps=(obj,))
     return getattr(obj.value, name)(*args, **kwargs)
 
 

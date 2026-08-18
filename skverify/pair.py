@@ -25,23 +25,46 @@ class Pair:
     def __init__(self, value, formula, domain=None, steps=None):
         self.value = value  # the real ndarray/scalar, what executes
         self.formula = formula  # the sympy Expr, what it means
-        # the derivation: every intermediate formula that led here, in
-        # execution order, ending with this one. Two runs taking different
-        # branches produce different steps, because different ops ran.
-        self.steps = (steps or []) + [formula]
+        # provenance is a DAG of parent Pairs; .steps flattens it on
+        # demand, deduplicating shared ancestors. Two runs taking
+        # different branches produce different steps, because different
+        # ops ran.
+        self._parents = tuple(steps or ())
 
         if domain is not None and not isinstance(domain[0], tuple):
             domain = (domain,)
 
         self._axis_bounds = domain  # for ndarray
 
+    def __repr__(self):
+        text = str(self.formula)
+        if len(text) > 60:
+            text = text[:57] + "..."
+        if self._axis_bounds is None:
+            return f"Pair({text})"
+        return f"Pair({text}, domain={self.domain})"
+
+    @property
+    def steps(self):
+        seen = set()
+        out = []
+        stack = [(self, False)]
+        while stack:
+            node, expanded = stack.pop()
+            if expanded:
+                out.append(node.formula)
+                continue
+            if id(node) in seen:
+                continue
+            seen.add(id(node))
+            stack.append((node, True))
+            for parent in reversed(node._parents):
+                stack.append((parent, False))
+        return out
+
     @staticmethod
     def _steps_of(*operands):
-        collected = []
-        for x in operands:
-            if isinstance(x, Pair):
-                collected.extend(x.steps)
-        return collected
+        return tuple(x for x in operands if isinstance(x, Pair))
 
     @staticmethod
     def _formula_of(x):
@@ -208,7 +231,7 @@ class Pair:
                     f"index map {old_sym} -> {expr} is not affine"
                 )
         formula = self.formula.subs(index_map, simultaneous=True)
-        return Pair(value, formula, domain=axis_bounds or None, steps=self.steps)
+        return Pair(value, formula, domain=axis_bounds or None, steps=(self,))
 
     def _getitem_nd(self, key):
         # u[1:, 2] on a 4x7 array -> entries ((1, 4), 2)
@@ -251,10 +274,11 @@ class Pair:
                         "masked assignment with an array value is data-dependent"
                     )
                 self.value[key.value] = Pair._value_of(val)
+                prior = self.formula
                 self.formula = sympy.Piecewise(
-                    (Pair._formula_of(val), key.formula), (self.formula, True)
+                    (Pair._formula_of(val), key.formula), (prior, True)
                 )
-                self.steps = Pair._steps_of(self, key, val) + [self.formula]
+                self._record_write(prior, key, val)
                 return
             raise NotImplementedError("only boolean Pair keys are supported")
 
@@ -313,13 +337,20 @@ class Pair:
                 {k: v for k, v in val_map.items()}, simultaneous=True
             )
         self.value[key] = Pair._value_of(val)
+        prior = self.formula
         if condition:
             self.formula = sympy.Piecewise(
-                (val_formula, sympy.And(*condition)), (self.formula, True)
+                (val_formula, sympy.And(*condition)), (prior, True)
             )
         else:
             self.formula = val_formula
-        self.steps = Pair._steps_of(self, val) + [self.formula]
+        self._record_write(prior, val)
+
+    def _record_write(self, prior_formula, *operands):
+        # an in-place write mutates formula; the pre-write state becomes
+        # a parent node so the DAG keeps the whole derivation
+        prior = Pair(self.value, prior_formula, self._axis_bounds, steps=self._parents)
+        self._parents = (prior,) + Pair._steps_of(*operands)
 
     def transpose(self, axes=None):
         # u (4x7), u.T: u[i, j] -> u[j, i], bounds ((0,4),(0,7)) -> ((0,7),(0,4))
@@ -399,12 +430,22 @@ class Pair:
 
     __rmul__ = __mul__
 
+    def __matmul__(self, other):
+        from .maps.numpy import _matmul
+
+        return _matmul(self, other)
+
+    def __rmatmul__(self, other):
+        from .maps.numpy import _matmul
+
+        return _matmul(other, self)
+
     def __abs__(self):
         return Pair(
             abs(self.value),
             sympy.Abs(self.formula),
             domain=self._axis_bounds,
-            steps=self.steps,
+            steps=(self,),
         )
 
     def __bool__(self):
@@ -517,7 +558,7 @@ class Pair:
 
     def __neg__(self):  # -self
         return Pair(
-            -self.value, -self.formula, domain=self._axis_bounds, steps=self.steps
+            -self.value, -self.formula, domain=self._axis_bounds, steps=(self,)
         )
 
     @classmethod
@@ -586,6 +627,10 @@ class Pair:
             return Pair._binary(inputs, Pair.__pow__, Pair.__rpow__, self)
         if ufunc is np.negative:
             return -inputs[0]
+        if ufunc is np.matmul:
+            from .maps.numpy import _matmul
+
+            return _matmul(*inputs)
 
         target = UFUNC_TABLE.get(ufunc)
         if target is None:
@@ -740,7 +785,7 @@ def _invert(self):
         np.bitwise_not(self.value),
         sympy.Not(self.formula),
         domain=self._axis_bounds,
-        steps=self.steps,
+        steps=(self,),
     )
 
 
