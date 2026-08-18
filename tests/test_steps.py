@@ -153,7 +153,7 @@ class TestStepFold:
 
     def test_expansion_reproduces_steps_exactly(self):
         # the completeness guarantee: rules are notation, not truncation
-        from skverify.pair import _delta_steps, _fold_runs, _fresh_name, _PREV
+        from skverify.pair import _delta_steps, _fold_runs, _fresh_name, _STEP
 
         u = self._scatter()
         steps = u.steps
@@ -164,10 +164,12 @@ class TestStepFold:
             for r in range(blocks):
                 for t in templates:
                     d = t.subs(k, r) if blocks > 1 else t
-                    for depth, sym in enumerate(_PREV, start=1):
-                        if d.has(sym):
-                            d = d.xreplace({sym: rebuilt[-depth]})
-                    rebuilt.append(d)
+                    refs = {
+                        s: rebuilt[int(s.indices[0])]
+                        for s in d.atoms(sympy.Indexed)
+                        if s.base == _STEP
+                    }
+                    rebuilt.append(d.xreplace(refs) if refs else d)
         assert rebuilt == steps
 
     def test_no_false_folds(self):

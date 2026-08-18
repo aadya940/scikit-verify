@@ -19,7 +19,7 @@ import numpy as np
 import sympy
 
 from .helpers import axis_idx
-from .pair import Pair
+from .pair import Pair, _loop_end, _loop_iter
 
 ALLOC = {"zeros", "empty", "ones", "full"}
 NEUTRAL = {"asarray", "asanyarray", "ascontiguousarray", "asfortranarray"}
@@ -96,10 +96,38 @@ def _skv_opaque(fn):
 
 
 class _Rewriter(ast.NodeTransformer):
-    def __init__(self, fn_globals):
+    def __init__(self, fn_globals, tag=""):
         self.fn_globals = fn_globals
+        self.tag = tag
         self.sites = []
         self.callees = set()
+
+    def _tag_loop(self, node):
+        self.generic_visit(node)
+        loop_id = f"{self.tag}:{node.lineno}"
+        marker = ast.Expr(
+            ast.Call(
+                func=ast.Name(id="__skv_loop_iter__", ctx=ast.Load()),
+                args=[ast.Constant(value=loop_id)],
+                keywords=[],
+            )
+        )
+        end = ast.Expr(
+            ast.Call(
+                func=ast.Name(id="__skv_loop_end__", ctx=ast.Load()),
+                args=[ast.Constant(value=loop_id)],
+                keywords=[],
+            )
+        )
+        node.body.insert(0, marker)
+        self.sites.append(f"loop {loop_id} tagged")
+        return [node, end]
+
+    def visit_For(self, node):
+        return self._tag_loop(node)
+
+    def visit_While(self, node):
+        return self._tag_loop(node)
 
     def _target_name(self, func):
         if isinstance(func, ast.Attribute):
@@ -183,7 +211,7 @@ def _instrument(fn, depth, seen):
         if getattr(fn, "__wrapped__", None) is not None or fn.__closure__:
             raise TypeError("wrapped functions are not instrumented")
         fdef.decorator_list = []
-    rewriter = _Rewriter(fn.__globals__)
+    rewriter = _Rewriter(fn.__globals__, tag=fn.__name__)
     rewriter.visit(tree)
     ast.fix_missing_locations(tree)
 
@@ -195,6 +223,8 @@ def _instrument(fn, depth, seen):
     namespace["__skv_neutral__"] = _skv_neutral
     namespace["__skv_opaque__"] = _skv_opaque
     namespace["__skv_method__"] = _skv_method
+    namespace["__skv_loop_iter__"] = _loop_iter
+    namespace["__skv_loop_end__"] = _loop_end
 
     sites = list(rewriter.sites)
     if depth > 0:

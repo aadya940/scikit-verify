@@ -5,7 +5,7 @@ import inspect
 import numpy as np
 import sympy
 
-from .pair import _GUARDS, _OPAQUE, Pair
+from .pair import _GUARDS, _LOOP_EVENTS, _LOOP_STACK, _OPAQUE, Pair
 from .helpers import axis_idx
 
 
@@ -23,6 +23,8 @@ def to_sympy(fn, *args):
     wrapped = [_wrap(name, val) for name, val in _infer_names(fn, args)]
     _GUARDS.clear()
     _OPAQUE.clear()
+    _LOOP_EVENTS.clear()
+    _LOOP_STACK.clear()
     sites = ()
     try:
         out = _repack(fn(*wrapped))
@@ -34,6 +36,8 @@ def to_sympy(fn, *args):
             raise
         _GUARDS.clear()
         _OPAQUE.clear()
+        _LOOP_EVENTS.clear()
+        _LOOP_STACK.clear()
         out = _repack(fn_run(*wrapped))
     if isinstance(out, Pair):
         # every branch taken during the trace, as one hypothesis: the
