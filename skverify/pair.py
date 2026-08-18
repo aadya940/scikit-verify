@@ -1184,6 +1184,29 @@ class Pair:
             return None
         if not all(is_index_array(k) for k in parts):
             raise NotImplementedError("mixed fancy/slice indexing not supported")
+        if len(parts) == 1:
+            idx = np.asarray(parts[0])
+            if idx.ndim == 1 and idx.size >= 2:
+                strides = np.diff(idx)
+                if len(set(strides.tolist())) == 1:
+                    # affine gather: u[[3,2,1,0]] is the remap i -> 3 - i,
+                    # same machinery as strided slices, ONE indexed formula
+                    d, start = int(strides[0]), int(idx[0])
+                    sym = axis_idx(0)
+                    index_map = {sym: d * sym + start}
+                    index_map.update(
+                        {
+                            axis_idx(ax): axis_idx(ax)
+                            for ax in range(1, len(self._axis_bounds))
+                        }
+                    )
+                    value = self.value[np.asarray(parts[0])]
+                    return self._remap(
+                        value=value.copy() if isinstance(value, np.ndarray) else value,
+                        index_map=index_map,
+                        axis_bounds=((0, int(idx.size)),)
+                        + tuple(self._axis_bounds[1:]),
+                    )
         arrays = np.broadcast_arrays(*[np.asarray(k) for k in parts])
         out = np.empty(arrays[0].shape, dtype=object)
         for pos in np.ndindex(arrays[0].shape):

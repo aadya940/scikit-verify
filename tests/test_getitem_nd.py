@@ -165,3 +165,39 @@ class TestRefusals:
     def test_double_ellipsis(self, u):
         with pytest.raises(IndexError):
             u[..., ...]
+
+
+class TestAffineFancy:
+    def test_strided_gather_is_one_rule(self, u):
+        # u[[0, 2]] on 4x7: rows 0 and 2 -> u[2i, j], not decompressed
+        r = u[[0, 2]]
+        assert isinstance(r, Pair)
+        assert r.formula == U[2 * I, J]
+        assert np.allclose(r.value, u.value[[0, 2]])
+
+    def test_reversed_gather(self, u):
+        r = u[[3, 2, 1, 0]]
+        assert isinstance(r, Pair)
+        assert r.formula == U[3 - I, J]
+        assert np.allclose(r.value, u.value[::-1])
+
+    def test_offset_gather_1d(self):
+        v = Pair.array("v", np.arange(8.0))
+        V = sympy.IndexedBase("v")
+        r = v[[1, 3, 5]]
+        assert r.formula == V[2 * I + 1]
+        assert r.domain == (0, 3)
+        assert np.allclose(r.value, np.array([1.0, 3.0, 5.0]))
+
+    def test_irregular_gather_decompresses(self, u):
+        # [0, 1, 3] is not affine: honest per-element fallback
+        out = u[[0, 1, 3]]
+        assert out.dtype == object
+        assert out[2].formula == U[3, I]
+
+    def test_gather_then_arithmetic(self):
+        v = Pair.array("v", np.arange(8.0))
+        d = v[[2, 4, 6]] - v[[1, 3, 5]]
+        V = sympy.IndexedBase("v")
+        assert sympy.simplify(d.formula - (V[2 * I + 2] - V[2 * I + 1])) == 0
+        assert np.allclose(d.value, [1.0, 1.0, 1.0])
