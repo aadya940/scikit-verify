@@ -387,6 +387,11 @@ class Pair:
 
         self._axis_bounds = domain  # for ndarray
 
+    def _repr_latex_(self):
+        # Jupyter renders the formula as mathematics
+        text = sympy.latex(self.formula)
+        return f"$\\displaystyle {text}$"
+
     def __repr__(self):
         text = str(self.formula)
         if len(text) > 60:
@@ -467,6 +472,11 @@ class Pair:
                 continue
             if body[0] in named or body[0] == last_line:
                 continue
+            if (
+                isinstance(body[0], sympy.Indexed)
+                and body[0].base == _STEP
+            ):
+                continue  # `step 6: step[5]` says nothing
             last_line = body[0]
             lines.append(f"step {start}: {body[0]}")
         final = reduced[-1]
