@@ -330,6 +330,15 @@ def _skv_maybe(fn):
             return twin
         except (OSError, TypeError, SyntaxError, KeyError, AttributeError):
             return fn
+    if inspect.ismethod(fn) and inspect.isfunction(fn.__func__):
+        # a bound method (norm.pdf): twin the function, rebind to the
+        # instance; self.method calls inside chain through the doorman
+        inner = fn.__func__
+        if not getattr(inner, "__closure__", None):
+            sub = runtime_twin(inner)
+            if sub is not inner:
+                return sub.__get__(fn.__self__)
+        return fn
     if inspect.isfunction(fn) and not getattr(fn, "__closure__", None):
         mod = getattr(fn, "__module__", "") or ""
         if not mod.startswith(("builtins", "skverify")) and "__skv" not in fn.__name__:
