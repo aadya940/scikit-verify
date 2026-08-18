@@ -129,6 +129,13 @@ def _skv_scalarize(kind, x):
     return kind(Pair._value_of(x))
 
 
+def _skv_namespace(*args, **kwargs):
+    # array-api-compat is dispatch plumbing, not mathematics: the
+    # concrete lane is numpy, so the namespace IS numpy and xp.mean
+    # etc. reach Pairs through the normal protocol
+    return np
+
+
 def _skv_finfo(fn):
     def wrapper(dt, *args, **kwargs):
         if getattr(dt, "kind", None) == "O" or dt is object:
@@ -366,6 +373,9 @@ class _Rewriter(ast.NodeTransformer):
                 args=[node.func] + node.args,
                 keywords=[],
             )
+        elif name == "array_namespace":
+            self.sites.append("array_namespace -> numpy (compat layer skipped)")
+            node.func = ast.Name(id="__skv_namespace__", ctx=ast.Load())
         elif name == "finfo":
             self.sites.append("finfo -> concrete-lane precision")
             node.func = ast.Call(
@@ -484,6 +494,7 @@ def _instrument(fn, depth, seen):
     namespace["__skv_method__"] = _skv_method
     namespace["__skv_maybe__"] = _skv_maybe
     namespace["__skv_finfo__"] = _skv_finfo
+    namespace["__skv_namespace__"] = _skv_namespace
     namespace["__skv_concrete__"] = _skv_concrete
     namespace["__skv_scalarize__"] = _skv_scalarize
     namespace["__skv_concrete_call__"] = _skv_concrete_call

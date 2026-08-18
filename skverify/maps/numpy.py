@@ -32,6 +32,10 @@ UFUNC_TABLE[np.maximum] = sympy.Max
 UFUNC_TABLE[np.minimum] = sympy.Min
 UFUNC_TABLE[np.arctan2] = sympy.atan2
 UFUNC_TABLE[np.conjugate] = sympy.conjugate
+UFUNC_TABLE[np.mod] = sympy.Mod
+UFUNC_TABLE[np.copysign] = lambda a, b: sympy.Abs(a) * sympy.Piecewise(
+    (-1, b < 0), (1, True)
+)
 
 # comparisons spelled as functions: np.less(u, 0) etc.
 UFUNC_TABLE[np.less] = sympy.Lt

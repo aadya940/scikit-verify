@@ -923,6 +923,24 @@ class Pair:
 
     __rmul__ = __mul__
 
+    def __mod__(self, other):
+        mine, theirs, merged = Pair._broadcast(self, other)
+        return Pair(
+            value=self.value % Pair._value_of(other),
+            formula=sympy.Mod(mine, theirs),
+            domain=merged,
+            steps=Pair._steps_of(self, other),
+        )
+
+    def __rmod__(self, other):
+        mine, theirs, merged = Pair._broadcast(self, other)
+        return Pair(
+            value=Pair._value_of(other) % self.value,
+            formula=sympy.Mod(theirs, mine),
+            domain=merged,
+            steps=Pair._steps_of(self, other),
+        )
+
     def __matmul__(self, other):
         from .maps.numpy import _matmul
 
