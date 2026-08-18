@@ -196,3 +196,22 @@ class TestKernels:
         out = to_sympy(dirichlet, np.arange(5.0), 7.0)
         assert out.value[0] == 7.0 and out.value[4] == 7.0
         assert np.allclose(out.value[1:4], [1, 2, 3])
+
+
+class TestWriteThrough:
+    def test_chained_slice_write_reaches_parent(self):
+        # the pchip idiom: dk[1:-1][mask] = v must update dk, exactly
+        # as numpy views do
+        dk = Pair.array("d", np.zeros(6))
+        m = np.array([True, False, True, False])
+        dk[1:-1][m] = 7.0
+        ref = np.zeros(6)
+        ref[1:-1][m] = 7.0
+        assert np.allclose(np.asarray(Pair._value_of(dk.value), dtype=float), ref)
+
+    def test_chained_int_write(self):
+        dk = Pair.array("d", np.zeros(6))
+        dk[2:][1] = 5.0
+        ref = np.zeros(6)
+        ref[2:][1] = 5.0
+        assert np.allclose(np.asarray(Pair._value_of(dk.value), dtype=float), ref)

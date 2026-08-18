@@ -110,6 +110,10 @@ def _skv_neutral(a, dtype=None, **kwargs):
 
 
 def _skv_method(name, obj, *args, **kwargs):
+    if inspect.ismodule(obj):
+        # xp.astype(a, dt): a module function, not a method -- route
+        # through the doorman like any other call
+        return _skv_maybe(getattr(obj, name))(*args, **kwargs)
     if name == "type" and args and isinstance(args[0], Pair):
         return args[0]  # ret.dtype.type(x): a cast on a traced scalar
     if (

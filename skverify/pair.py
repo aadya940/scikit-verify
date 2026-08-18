@@ -769,17 +769,30 @@ class Pair:
         value = self.value[key]
         if isinstance(value, np.ndarray):
             value = value.copy()  # slices are value-semantic: no view aliasing
-        return self._remap(
+        result = self._remap(
             value=value,  # raw key: numpy interprets it independently
             index_map=index_map,
             axis_bounds=tuple(new_bounds),  # u[2, 3] -> (), remap makes it scalar
         )
+        if all(isinstance(e, tuple) for e in entries):
+            # chained writes (dk[1:-1][mask] = v) must reach the parent:
+            # remember where this slice came from
+            result._slice_of = (self, entries)
+        return result
 
     def __setitem__(self, key, val):
         # u[2:5] = v: the formula becomes a scatter, old rule outside the
         # written region, the value's rule (re-indexed) inside it
         if self._axis_bounds is None:
             raise TypeError("scalar Pair does not support item assignment")
+
+        origin = getattr(self, "_slice_of", None)
+        if origin is not None:
+            # write-through: translate this write onto the parent so the
+            # chained idiom dk[1:-1][mask] = v stays correct
+            parent, entries = origin
+            parent[Pair._compose_key(entries, key, self)] = val
+            self.__dict__["_slice_of"] = None  # local write follows below
 
         def is_idx_arr(k):
             return (
@@ -798,6 +811,38 @@ class Pair:
             # positions are trace facts; decompose into scalar writes
             positions = np.nonzero(parts[0])
             parts = (positions[0],) if len(positions) == 1 else positions
+        lengths_all = tuple(hi - lo for lo, hi in self._axis_bounds)
+
+        def is_full_slice(k, ax):
+            return isinstance(k, slice) and k.indices(lengths_all[ax]) == (
+                0,
+                lengths_all[ax],
+                1,
+            )
+
+        if (
+            sum(is_idx_arr(k) for k in parts) == 1
+            and any(
+                is_full_slice(k, i) for i, k in enumerate(parts)
+            )
+            and all(
+                is_idx_arr(k) or is_full_slice(k, i)
+                for i, k in enumerate(parts)
+            )
+        ):
+            # one index array among full slices: decompose per element,
+            # each row-write handled by the ordinary scatter machinery
+            ax = next(i for i, k in enumerate(parts) if is_idx_arr(k))
+            arr = np.asarray(parts[ax]).ravel()
+            scalar_val = np.ndim(Pair._value_of(val)) == 0
+            for k_pos, p in enumerate(arr):
+                sub = tuple(
+                    int(p) if i == ax else parts[i] for i in range(len(parts))
+                )
+                self[sub if len(sub) > 1 else sub[0]] = (
+                    val if scalar_val else val[k_pos]
+                )
+            return
         if any(is_idx_arr(k) for k in parts) and all(
             is_idx_arr(k) or isinstance(k, (int, np.integer)) for k in parts
         ):
@@ -924,6 +969,34 @@ class Pair:
         else:
             self.formula = val_formula
         self._record_write(prior, val)
+
+    @staticmethod
+    def _compose_key(entries, key, view):
+        """Map a key on the sliced view to the parent's coordinates:
+        entry (start, stop, step) turns index i into start + step*i."""
+        parts = key if isinstance(key, tuple) else (key,)
+        parts = parts + (slice(None),) * (len(entries) - len(parts))
+        out = []
+        for ax, (entry, k) in enumerate(zip(entries, parts)):
+            start, stop, step = entry
+            length = len(range(start, stop, step))
+            if isinstance(k, (int, np.integer)):
+                out.append(start + step * int(k))
+            elif isinstance(k, slice):
+                a, b, c = k.indices(length)
+                out.append(slice(start + step * a, start + step * b, step * c))
+            elif isinstance(k, np.ndarray) and k.dtype == bool:
+                out.append(start + step * np.nonzero(k)[0])
+            elif isinstance(k, Pair) and Pair._is_condition(k.formula):
+                mask = np.asarray(k.value, dtype=bool)
+                out.append(start + step * np.nonzero(mask)[0])
+            elif isinstance(k, (list, np.ndarray)):
+                out.append(start + step * np.asarray(k, dtype=int))
+            else:
+                raise NotImplementedError(
+                    "write-through slice: unsupported sub-key"
+                )
+        return tuple(out) if len(out) > 1 else out[0]
 
     def _record_write(self, prior_formula, *operands):
         # an in-place write mutates formula; the pre-write state becomes

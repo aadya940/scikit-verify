@@ -365,7 +365,13 @@ def _concrete_check(np_fn):
 def _astype(a, dtype, copy=True, **kwargs):
     if isinstance(a, Pair):
         return a.astype(dtype)
-    return np.astype(a, dtype, copy=copy, **kwargs)
+    if (
+        isinstance(a, np.ndarray)
+        and a.dtype == object
+        and any(isinstance(e, Pair) for e in a.ravel())
+    ):
+        return a  # traced elements: the cast is math-neutral
+    return np.astype(np.asarray(a), dtype, copy=copy, **kwargs)
 
 
 def _diag(v, k=0):
