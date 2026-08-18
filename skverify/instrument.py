@@ -333,6 +333,12 @@ def _skv_maybe(fn):
     cannot dodge them."""
     if getattr(fn, "__name__", None) in OPAQUE_CALLABLES:
         return _skv_opaque(fn)
+    if inspect.isbuiltin(fn) and not isinstance(
+        getattr(fn, "__self__", None), (np.ndarray, Pair, type(np))
+    ):
+        # builtin METHODS (list.append, dict.get) have __module__ None
+        # and must never opaque: they would swallow Pairs into values
+        return fn
     if inspect.isclass(fn):
         # classes reached through variables (dispatch tables) twin at
         # runtime; the cache makes this once per class

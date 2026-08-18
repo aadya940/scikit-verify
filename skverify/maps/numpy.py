@@ -415,6 +415,10 @@ def _mean(a, axis=None, **kwargs):
 def _var(a, axis=None, ddof=0, correction=None, **kwargs):
     if correction is not None:
         ddof = correction  # the array-api spelling of ddof
+    if isinstance(a, Pair) and axis == 0 and len(a._axis_bounds or ()) == 1:
+        axis = None  # axis 0 of 1-D IS the whole array
+    if isinstance(a, Pair) and axis is not None:
+        raise NotImplementedError("var over one axis of N-D not supported yet")
     if not isinstance(a, Pair) or axis is not None:
         return np.var(np.asarray(Pair._value_of(a), dtype=float), axis=axis, ddof=ddof)
     n = int(np.prod([hi - lo for lo, hi in a._axis_bounds]))
