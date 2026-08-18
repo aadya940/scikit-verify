@@ -69,9 +69,31 @@ class TestBroadcastRefusals:
         with pytest.raises(ValueError):
             u + w
 
-    def test_extent_one_refused_v1(self):
-        # (4,1) meeting (4,7): numpy stretches the 1; we don't yet
-        u = Pair.array("u", np.zeros((4, 7)))
-        c = Pair.array("c", np.zeros((4, 1)))
-        with pytest.raises((ValueError, NotImplementedError)):
-            u + c
+    def test_extent_one_stretches(self):
+        # (4,1) meeting (4,7): the 1 stretches, its letter pins to 0
+        u = Pair.array("u", np.arange(28.0).reshape(4, 7))
+        c = Pair.array("c", np.arange(4.0).reshape(4, 1))
+        r = u + c
+        U, C = sympy.IndexedBase("u"), sympy.IndexedBase("c")
+        I, J = axis_idx(0), axis_idx(1)
+        assert sympy.simplify(r.formula - (U[I, J] + C[I, 0])) == 0
+        assert r.domain == ((0, 4), (0, 7))
+        assert np.allclose(r.value, u.value + c.value)
+
+    def test_extent_one_row_vector(self):
+        # (1,7) meeting (4,7)
+        u = Pair.array("u", np.arange(28.0).reshape(4, 7))
+        c = Pair.array("c", np.arange(7.0).reshape(1, 7))
+        r = u * c
+        U, C = sympy.IndexedBase("u"), sympy.IndexedBase("c")
+        I, J = axis_idx(0), axis_idx(1)
+        assert sympy.simplify(r.formula - (U[I, J] * C[0, J])) == 0
+        assert np.allclose(r.value, u.value * c.value)
+
+    def test_newaxis_then_broadcast(self):
+        # the lsq pattern: y (n,2) * w[:, None] (n,1)
+        y = Pair.array("y", np.arange(8.0).reshape(4, 2))
+        w = Pair.array("w", np.arange(4.0) + 1)
+        r = y * w[:, None]
+        assert np.allclose(r.value, y.value * (w.value[:, None]))
+        assert r.domain == ((0, 4), (0, 2))

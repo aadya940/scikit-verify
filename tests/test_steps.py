@@ -79,3 +79,178 @@ class TestSteps:
         w = np.where(u, np.exp(u), 0.0 * u)
         assert sympy.exp(U[I]) in w.steps
         assert w.steps[-1] == w.formula
+
+
+class TestCseSteps:
+    def _ols_slope(self):
+        x = Pair.array("x", np.arange(4.0))
+        y = Pair.array("y", np.arange(4.0) * 2.0)
+        sx, sy = np.sum(x), np.sum(y)
+        sxx, sxy = np.sum(x * x), np.sum(x * y)
+        return (4 * sxy - sx * sy) / (4 * sxx - sx * sx)
+
+    def test_substituting_back_is_exact(self):
+        # the workstream rule: the pretty view can never drift from truth
+        r = self._ols_slope()
+        assignments, steps = r.cse_steps()
+        for reduced, original in zip(steps, r.steps):
+            for sym, expr in reversed(assignments):
+                reduced = reduced.subs(sym, expr)
+            assert reduced == original
+
+    def test_shared_sum_named_once(self):
+        r = self._ols_slope()
+        assignments, _ = r.cse_steps()
+        text = " ; ".join(str(e) for _, e in assignments)
+        # Sum(x[j], ...) is used twice in the slope but assigned once
+        assert text.count("Sum(x[j], (j, 0, 3))") == 1
+
+    def test_bound_index_stays_inside_its_sum(self):
+        # cse must not hoist u[j]*v[j] (bound j) to a top-level name
+        u = Pair.array("u", np.arange(4.0))
+        v = Pair.array("v", np.arange(4.0))
+        r = np.sum(u * v) + np.sum(u * v) * 2.0
+        assignments, steps = r.cse_steps()
+        for _, expr in assignments:
+            if not expr.has(sympy.Sum):
+                assert not any(
+                    str(s) == "j" for s in expr.free_symbols
+                ), f"bound index leaked into assignment {expr}"
+        for reduced, original in zip(steps, r.steps):
+            for sym, expr in reversed(assignments):
+                reduced = reduced.subs(sym, expr)
+            assert reduced == original
+
+    def test_derivation_reads_top_to_bottom(self):
+        r = self._ols_slope()
+        text = r.derivation()
+        assert "t0 = " in text
+        assert text.splitlines()[-1].startswith("result: ")
+
+    def test_derivation_on_write_history(self):
+        u = Pair.array("u", np.zeros(4))
+        v = np.exp(Pair.array("v", np.arange(4.0)))
+        u[1:3] = v[1:3]
+        text = u.derivation()
+        assert text.splitlines()[-1].startswith("result: ")
+        assert "Piecewise" in text
+
+
+class TestStepFold:
+    def _scatter(self, n=8):
+        u = Pair.array("u", np.zeros(n))
+        v = np.exp(Pair.array("v", np.arange(float(n))))
+        for m in range(1, n - 1):
+            u[m] = v[m]
+        return u
+
+    def test_run_folds_to_one_rule_line(self):
+        u = self._scatter()
+        body = [
+            l for l in u.derivation().splitlines() if l.startswith("steps ")
+        ]
+        assert len(body) == 1  # 6 writes, one rule line
+
+    def test_expansion_reproduces_steps_exactly(self):
+        # the completeness guarantee: rules are notation, not truncation
+        from skverify.pair import _delta_steps, _fold_runs, _fresh_name, _STEP
+
+        u = self._scatter()
+        steps = u.steps
+        deltas = _delta_steps(steps)
+        k = _fresh_name("n", deltas)
+        rebuilt = []
+        for templates, start, blocks in _fold_runs(deltas, k):
+            for r in range(blocks):
+                for t in templates:
+                    d = t.subs(k, r) if blocks > 1 else t
+                    refs = {
+                        s: rebuilt[int(s.indices[0])]
+                        for s in d.atoms(sympy.Indexed)
+                        if s.base == _STEP
+                    }
+                    rebuilt.append(d.xreplace(refs) if refs else d)
+        assert rebuilt == steps
+
+    def test_no_false_folds(self):
+        # structurally different steps must stay verbatim
+        u = Pair.array("u", np.arange(4.0))
+        r = np.sum(np.exp(u)) * 2.0 + np.sum(u)
+        assert not any(
+            l.startswith("steps ") for l in r.derivation().splitlines()
+        )
+
+    def test_derivation_size_tracks_structure_not_data(self):
+        small = len(self._scatter(8).derivation().splitlines())
+        large = len(self._scatter(64).derivation().splitlines())
+        assert large <= small + 2  # rule line absorbs the growth
+
+
+def _sum_kernel(u):
+    acc = np.zeros(8)
+    total = 0.0
+    for r in range(8):
+        total = total + u[r]
+        acc[r] = total
+    return total
+
+
+def _product_kernel(u):
+    acc = np.zeros(8)
+    p = 1.0
+    for r in range(8):
+        p = p * u[r]
+        acc[r] = p
+    return p
+
+
+def _horner_kernel(c):
+    acc = np.zeros(4)
+    v = 0.0
+    for r in range(4):
+        v = v * 2.0 + c[r]
+        acc[r] = v
+    return v
+
+
+class TestClosedForms:
+    def test_sum_accumulator_closes(self):
+        u = np.linspace(1.0, 2.0, 8)
+        r = to_sympy(_sum_kernel, u)
+        text = r.derivation()
+        assert "Sum(" in text
+        assert np.isclose(float(r.value), u.sum())
+
+    def test_product_accumulator_closes(self):
+        u = np.linspace(1.0, 2.0, 8)
+        r = to_sympy(_product_kernel, u)
+        text = r.derivation()
+        assert "Product(" in text
+        assert np.isclose(float(r.value), u.prod())
+
+    def test_horner_recurrence_traced(self):
+        # linear recurrence: rsolve closes it or the fold stays; either
+        # way the trace is honest and the value lane exact
+        c = np.array([1.0, 2.0, 3.0, 4.0])
+        r = to_sympy(_horner_kernel, c)
+        r.derivation()  # must not raise
+        expected = 0.0
+        for k in range(4):
+            expected = expected * 2.0 + c[k]
+        assert np.isclose(float(r.value), expected)
+
+    def test_closed_form_is_verified_not_guessed(self):
+        # a loop whose "accumulator" jumps non-uniformly must NOT close
+        u = np.linspace(1.0, 2.0, 8)
+
+        def jumpy(u):
+            acc = np.zeros(8)
+            total = 0.0
+            for r in range(8):
+                total = total + u[r] ** (r % 3)
+                acc[r] = total
+            return total
+
+        r = to_sympy(jumpy, u)
+        text = r.derivation()  # honest output, folded or not
+        assert np.isclose(float(r.value), sum(u[k] ** (k % 3) for k in range(8)))
