@@ -9,7 +9,7 @@ from .pair import _GUARDS, _LOOP_EVENTS, _LOOP_STACK, _OPAQUE, Pair
 from .helpers import axis_idx
 
 
-def to_sympy(fn, *args):
+def to_sympy(fn, *args, **kwargs):
     """Run ``fn`` with tracing values.
 
     Array arguments become indexed formulas named after the function's
@@ -27,14 +27,23 @@ def to_sympy(fn, *args):
     if sys.getrecursionlimit() < 20000:
         sys.setrecursionlimit(20000)
 
-    wrapped = [_wrap(name, val) for name, val in _infer_names(fn, args)]
+    if kwargs:
+        # keyword arguments wrap by their own names
+        args = args + tuple(kwargs.values())
+        kw_wrapped = {k: _wrap(k, v) for k, v in kwargs.items()}
+    else:
+        kw_wrapped = {}
+    wrapped = [
+        _wrap(name, val)
+        for name, val in _infer_names(fn, args[: len(args) - len(kw_wrapped)])
+    ]
     _GUARDS.clear()
     _OPAQUE.clear()
     _LOOP_EVENTS.clear()
     _LOOP_STACK.clear()
     sites = ()
     try:
-        out = _repack(fn(*wrapped))
+        out = _repack(fn(*wrapped, **kw_wrapped))
     except (NotImplementedError, ValueError, TypeError, AttributeError):
         # a wall the plain trace cannot pass; retry a semantically
         # identical instrumented copy (math-neutral calls replaced)
@@ -45,7 +54,7 @@ def to_sympy(fn, *args):
         _OPAQUE.clear()
         _LOOP_EVENTS.clear()
         _LOOP_STACK.clear()
-        out = _repack(fn_run(*wrapped))
+        out = _repack(fn_run(*wrapped, **kw_wrapped))
         if any("decorator unwrapped" in site for site in sites):
             # names propose, runs dispose: the wrapper must have been
             # neutral FOR THIS CALL -- rerun the real function on the

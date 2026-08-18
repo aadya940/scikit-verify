@@ -1324,6 +1324,10 @@ class Pair:
             return int(v)
         raise TypeError("only integral scalar Pairs can index")
 
+    def copy(self, order="C"):
+        value = self.value.copy() if hasattr(self.value, "copy") else self.value
+        return Pair(value, self.formula, self._axis_bounds, steps=(self,))
+
     def var(self, axis=None, ddof=0, **kwargs):
         from .maps.numpy import _var
 
