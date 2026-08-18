@@ -1324,6 +1324,22 @@ class Pair:
             return int(v)
         raise TypeError("only integral scalar Pairs can index")
 
+    def var(self, axis=None, ddof=0, **kwargs):
+        from .maps.numpy import _var
+
+        return _var(self, axis=axis, ddof=ddof)
+
+    def std(self, axis=None, ddof=0, **kwargs):
+        from .maps.numpy import _std
+
+        return _std(self, axis=axis, ddof=ddof)
+
+    @property
+    def flat(self):
+        # numpy's flat iterator: our flattened view suffices for the
+        # read patterns library code uses
+        return self.ravel()
+
     def ravel(self, order="C"):
         # flattening is a layout-preserving reshape
         return self.reshape((int(np.size(self.value)),))

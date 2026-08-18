@@ -13,6 +13,7 @@ touched.
 
 import ast
 import inspect
+import sys
 import textwrap
 
 import numpy as np
@@ -317,6 +318,13 @@ def runtime_twin(fn):
     return sub if sites else fn
 
 
+def _twinnable(fn):
+    # stdlib code is never mathematics; re-exec also breaks its
+    # name-mangled privates (__marker) and C-adjacent idioms
+    mod = (getattr(fn, "__module__", "") or "").split(".")[0]
+    return mod not in sys.stdlib_module_names and mod not in ("builtins", "skverify")
+
+
 def _skv_maybe(fn):
     """Pass Python functions, methods, classes, ufuncs and builtins
     through; wrap anything COMPILED so traced arguments turn the call
@@ -337,18 +345,15 @@ def _skv_maybe(fn):
         # a bound method (norm.pdf): twin the function, rebind to the
         # instance; self.method calls inside chain through the doorman
         inner = fn.__func__
-        if isinstance(fn.__self__, Pair) or (
-            getattr(inner, "__module__", "") or ""
-        ).startswith("skverify"):
-            return fn  # never twin our own machinery
+        if isinstance(fn.__self__, Pair) or not _twinnable(inner):
+            return fn
         if not getattr(inner, "__closure__", None):
             sub = runtime_twin(inner)
             if sub is not inner:
                 return sub.__get__(fn.__self__)
         return fn
     if inspect.isfunction(fn) and not getattr(fn, "__closure__", None):
-        mod = getattr(fn, "__module__", "") or ""
-        if not mod.startswith(("builtins", "skverify")) and "__skv" not in fn.__name__:
+        if _twinnable(fn) and "__skv" not in fn.__name__:
             if fn in _FN_MEMO:
                 sub, sub_sites = _FN_MEMO[fn]
             else:
@@ -445,6 +450,7 @@ class _Rewriter(ast.NodeTransformer):
         self.sites = []
         self.callees = set()
         self.wrapped = 0
+        self.first_arg = None
 
     def _tag_loop(self, node):
         self.generic_visit(node)
@@ -574,7 +580,7 @@ class _Rewriter(ast.NodeTransformer):
             # needs; the twin class is injected as __skv_class__
             node.args = [
                 ast.Name(id="__skv_class__", ctx=ast.Load()),
-                ast.Name(id="self", ctx=ast.Load()),
+                ast.Name(id=self.first_arg or "self", ctx=ast.Load()),
             ]
             self.sites.append("super() -> explicit twin super")
         elif name == "at":
@@ -726,6 +732,8 @@ def _instrument(fn, depth, seen, extra=None):
             raise TypeError("wrapped functions are not instrumented")
         fdef.decorator_list = []
     rewriter = _Rewriter(fn.__globals__, tag=fn.__name__)
+    if fdef.args.args:
+        rewriter.first_arg = fdef.args.args[0].arg
     rewriter.visit(tree)
     ast.fix_missing_locations(tree)
 
@@ -830,23 +838,23 @@ def _instrument_class(C, depth, seen):
     (twin_or_C, sites)."""
     if C in _CLASS_TWINS:
         return _CLASS_TWINS[C]
-    if (
-        not inspect.isclass(C)
-        or C is object
-        or C.__module__ in (None, "builtins")
-        or len(C.__bases__) != 1
-    ):
+    if not inspect.isclass(C) or C is object or not _twinnable(C):
         return C, ()
     key = f"class:{C.__module__}.{C.__qualname__}"
     if key in seen:
         return C, ()
     seen.add(key)
 
-    base, base_sites = (
-        _instrument_class(C.__bases__[0], depth, seen)
-        if C.__bases__[0] is not object
-        else (object, ())
-    )
+    bases, base_sites = [], []
+    for b in C.__bases__:
+        if b is object:
+            bases.append(b)
+            continue
+        tb, ts = _instrument_class(b, depth, seen)
+        bases.append(tb)
+        base_sites.extend(ts)
+    if all(b is object for b in bases):
+        bases = [object]
     members = {
         k: v
         for k, v in vars(C).items()
@@ -861,6 +869,10 @@ def _instrument_class(C, depth, seen):
     patch_namespaces = []
     for name, raw in list(members.items()):
         if name in (
+            "__init_subclass__",
+            "__class_getitem__",
+            "__subclasshook__",
+            "__set_name__",
             "__getattribute__",
             "__getattr__",
             "__setattr__",
@@ -963,7 +975,7 @@ def _instrument_class(C, depth, seen):
             members[name] = wrapper_kind(clone) if wrapper_kind else clone
             rebind.append(cell)
     try:
-        twin = type(C.__name__, (base,), members)
+        twin = type(C.__name__, tuple(bases), members)
     except TypeError:
         _CLASS_TWINS[C] = (C, ())
         return C, ()
