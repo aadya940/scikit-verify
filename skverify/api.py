@@ -49,6 +49,17 @@ def to_sympy(fn, *args, **kwargs):
         # identical instrumented copy (math-neutral calls replaced)
         fn_run, sites = instrument(fn)
         if not sites:
+            import inspect as _inspect
+
+            try:
+                _inspect.getsource(fn)
+            except (OSError, TypeError):
+                raise type(sys.exc_info()[1])(
+                    f"{sys.exc_info()[1]} \n[skverify] the trace hit a wall and "
+                    "your function's source is unavailable (interactive shells "
+                    "without source caching), so the instrumented retry cannot "
+                    "run. Define the function in a .py file or notebook cell."
+                ) from sys.exc_info()[1]
             raise
         _GUARDS.clear()
         _OPAQUE.clear()
@@ -88,6 +99,9 @@ def _wrap(name, val):
         return val  # config, not math: np.diff(a, 2) keeps its plain 2
     if np.isscalar(val):
         return Pair(val, sympy.Symbol(name, real=True))
+    if hasattr(val, "to_numpy") and not isinstance(val, np.ndarray):
+        # a DataFrame or Series: welcome it, keep the parameter's name
+        val = val.to_numpy(dtype=float)
     return Pair.array(name, val)
 
 
