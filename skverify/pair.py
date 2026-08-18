@@ -973,6 +973,44 @@ class Pair:
         return np.shape(self.value)
 
     @property
+    def preconditions(self):
+        """Branch conditions recorded during the trace this Pair came
+        from (path-scoped: the formula holds for inputs satisfying
+        them). Trace-global; to_sympy pins a snapshot on its result."""
+        stored = self.__dict__.get("_preconditions")
+        if stored is not None:
+            return stored
+        return sympy.And(*_GUARDS) if _GUARDS else sympy.true
+
+    @preconditions.setter
+    def preconditions(self, value):
+        self.__dict__["_preconditions"] = value
+
+    @property
+    def unchecked(self):
+        """Opaque-call records for the atoms appearing in THIS Pair's
+        derivation: what the formula assumes rather than derives."""
+        stored = self.__dict__.get("_unchecked")
+        if stored is not None:
+            return stored
+        names = set()
+        for formula in self.steps:
+            for base in formula.atoms(sympy.IndexedBase):
+                names.add(str(base.label))
+            for fn in formula.atoms(sympy.Function):
+                names.add(type(fn).__name__)
+        records = []
+        for entry in _OPAQUE:
+            key = entry[-1][0].split("[")[0].rstrip("*").rstrip("_")
+            if any(n == key or n.startswith(key + "_") for n in names):
+                records.append(entry)
+        return tuple(records)
+
+    @unchecked.setter
+    def unchecked(self, value):
+        self.__dict__["_unchecked"] = value
+
+    @property
     def size(self):
         return int(np.size(self.value))
 

@@ -37,3 +37,8 @@ def test_make_lsq_spline_lifts():
     # the disclosure rides on the returned object, Pair or not
     assert spl.unchecked == tuple(_OPAQUE)
     assert spl.preconditions is not None
+
+    # and on any inner Pair, scoped to ITS ancestry
+    mine = spl.c[0].unchecked
+    assert any("fpback" in e[-1][0] for e in mine)
+    assert spl.c[0].preconditions is not None
