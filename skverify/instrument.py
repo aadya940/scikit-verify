@@ -38,6 +38,9 @@ OPAQUE_CALLABLES = {
     "data_matrix",
     "fpback",
     "evaluate_all_bspl",
+    "solve",
+    "lstsq",
+    "_lstsq",
 }
 NEUTRAL_METHODS = {"toarray", "astype", "copy", "view"}
 CONCRETE = {"isfinite", "isnan", "isinf"}  # validation checks, not math
@@ -129,6 +132,22 @@ def _skv_scalarize(kind, x):
     return kind(Pair._value_of(x))
 
 
+def _skv_namespace(*args, **kwargs):
+    # array-api-compat is dispatch plumbing, not mathematics: the
+    # concrete lane is numpy, so the namespace IS numpy and xp.mean
+    # etc. reach Pairs through the normal protocol
+    return np
+
+
+def _skv_finfo(fn):
+    def wrapper(dt, *args, **kwargs):
+        if getattr(dt, "kind", None) == "O" or dt is object:
+            return np.finfo(np.float64)  # the concrete lane is float64
+        return fn(dt, *args, **kwargs)
+
+    return wrapper
+
+
 def _skv_concrete_call(fn):
     def wrapper(*args, **kwargs):
         return fn(*[Pair._value_of(a) for a in args], **kwargs)
@@ -192,7 +211,11 @@ def _skv_opaque_out(fn, out_idxs, transposed, *args, **kwargs):
 def _skv_maybe(fn):
     """Pass Python functions, methods, classes, ufuncs and builtins
     through; wrap anything COMPILED so traced arguments turn the call
-    into an opaque atom instead of a crash."""
+    into an opaque atom instead of a crash. Curated boundaries match
+    the RESOLVED callable's name, so aliases and attribute lookups
+    cannot dodge them."""
+    if getattr(fn, "__name__", None) in OPAQUE_CALLABLES:
+        return _skv_opaque(fn)
     if (
         inspect.isfunction(fn)
         or inspect.ismethod(fn)
@@ -357,6 +380,16 @@ class _Rewriter(ast.NodeTransformer):
                 args=[node.func] + node.args,
                 keywords=[],
             )
+        elif name == "array_namespace":
+            self.sites.append("array_namespace -> numpy (compat layer skipped)")
+            node.func = ast.Name(id="__skv_namespace__", ctx=ast.Load())
+        elif name == "finfo":
+            self.sites.append("finfo -> concrete-lane precision")
+            node.func = ast.Call(
+                func=ast.Name(id="__skv_finfo__", ctx=ast.Load()),
+                args=[node.func],
+                keywords=[],
+            )
         elif name in CONCRETE_CALLABLES:
             self.sites.append(f"{name} -> concrete lookup")
             node.func = ast.Call(
@@ -406,7 +439,14 @@ def instrument(fn, depth=3):
     returns (fn, ()) so tracing proceeds uninstrumented."""
     try:
         if getattr(fn, "__closure__", None):
-            return fn, ()  # closures do not survive re-exec
+            inner = getattr(fn, "__wrapped__", None)
+            if inspect.isfunction(inner) and not inner.__closure__:
+                # a wrapped function is just two functions: trace the
+                # inner one; to_sympy verifies the wrapper was neutral
+                # for this call by rerunning the real thing on values
+                sub, sites = _instrument(inner, depth, seen=set())
+                return sub, (f"{fn.__name__}: decorator unwrapped",) + sites
+            return fn, ()  # opaque closures do not survive re-exec
         return _instrument(fn, depth, seen=set())
     except (OSError, TypeError, SyntaxError, KeyError, AttributeError):
         return fn, ()
@@ -460,6 +500,8 @@ def _instrument(fn, depth, seen):
     namespace["__skv_opaque__"] = _skv_opaque
     namespace["__skv_method__"] = _skv_method
     namespace["__skv_maybe__"] = _skv_maybe
+    namespace["__skv_finfo__"] = _skv_finfo
+    namespace["__skv_namespace__"] = _skv_namespace
     namespace["__skv_concrete__"] = _skv_concrete
     namespace["__skv_scalarize__"] = _skv_scalarize
     namespace["__skv_concrete_call__"] = _skv_concrete_call
@@ -473,6 +515,25 @@ def _instrument(fn, depth, seen):
     if depth > 0:
         for name in rewriter.callees:
             callee = fn.__globals__.get(name)
+            if getattr(callee, "__name__", None) in OPAQUE_CALLABLES:
+                continue  # will be sealed at the boundary, not entered
+            if (
+                callable(callee)
+                and getattr(callee, "__closure__", None)
+                and inspect.isfunction(getattr(callee, "__wrapped__", None))
+                and not callee.__wrapped__.__closure__
+                and callee.__name__ not in seen
+            ):
+                # decorator-wrapped callee: instrument the inner function
+                seen.add(callee.__name__)
+                try:
+                    sub, sub_sites = _instrument(callee.__wrapped__, depth - 1, seen)
+                except (OSError, TypeError, SyntaxError, KeyError, AttributeError):
+                    continue
+                namespace[name] = sub
+                sites.append(f"{name}: decorator unwrapped")
+                sites.extend(f"{name}: {t}" for t in sub_sites)
+                continue
             if (
                 inspect.isfunction(callee)
                 and not getattr(callee, "__closure__", None)

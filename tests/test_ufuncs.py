@@ -62,9 +62,14 @@ class TestRefusals:
         with pytest.raises(NotImplementedError):
             np.frexp(make())
 
-    def test_reduce_method_refused(self):
-        with pytest.raises(NotImplementedError):
-            np.add.reduce(make())
+    def test_add_reduce_is_sum(self):
+        r = np.add.reduce(make())
+        assert isinstance(r.formula, sympy.Sum)
+
+    def test_max_reduce_is_lazy_max(self):
+        r = np.maximum.reduce(make())
+        assert isinstance(r.formula, sympy.Max)
+        assert float(r.value) == make().value.max()
 
     def test_out_kwarg_refused(self):
         u = make()

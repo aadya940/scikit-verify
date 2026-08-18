@@ -514,9 +514,13 @@ class Pair:
             if x.dtype == object:
                 elems = x.ravel()
                 if all(isinstance(e, Pair) for e in elems):
+                    formulas = [e.formula for e in elems]
+                    if len(set(formulas)) == 1:
+                        # keepdims mean and friends: one scalar in a box
+                        return formulas[0]
                     from .api import _recompress
 
-                    rule = _recompress([e.formula for e in elems])
+                    rule = _recompress(formulas)
                     if rule is not None:
                         return rule
                     raise NotImplementedError(
@@ -595,8 +599,11 @@ class Pair:
             return x.value
         if isinstance(x, np.ndarray) and x.dtype == object:
             elems = x.ravel()
-            if all(isinstance(e, Pair) for e in elems):
-                return np.array([e.value for e in elems], dtype=float).reshape(x.shape)
+            if any(isinstance(e, Pair) for e in elems):
+                vals = [e.value if isinstance(e, Pair) else e for e in elems]
+                return np.array(vals, dtype=float).reshape(x.shape)
+        if isinstance(x, (list, tuple)) and any(isinstance(e, Pair) for e in x):
+            return type(x)(Pair._value_of(e) for e in x)
         return x
 
     @staticmethod
@@ -919,6 +926,24 @@ class Pair:
 
     __rmul__ = __mul__
 
+    def __mod__(self, other):
+        mine, theirs, merged = Pair._broadcast(self, other)
+        return Pair(
+            value=self.value % Pair._value_of(other),
+            formula=sympy.Mod(mine, theirs),
+            domain=merged,
+            steps=Pair._steps_of(self, other),
+        )
+
+    def __rmod__(self, other):
+        mine, theirs, merged = Pair._broadcast(self, other)
+        return Pair(
+            value=Pair._value_of(other) % self.value,
+            formula=sympy.Mod(theirs, mine),
+            domain=merged,
+            steps=Pair._steps_of(self, other),
+        )
+
     def __matmul__(self, other):
         from .maps.numpy import _matmul
 
@@ -1048,6 +1073,17 @@ class Pair:
     def flags(self):
         return np.asarray(self.value).flags
 
+    def astype(self, dtype=None, copy=True, **kwargs):
+        # float cast is math-neutral; a real reinterpretation would lie
+        if dtype is not None and np.dtype(dtype).kind not in "fc":
+            raise NotImplementedError("astype to non-float would change the math")
+        return Pair(self.value, self.formula, self._axis_bounds, steps=(self,))
+
+    @property
+    def device(self):
+        # array-API bookkeeping; the concrete lane lives wherever numpy is
+        return getattr(np.asarray(self.value), "device", "cpu")
+
     @property
     def dtype(self):
         # object, deliberately: numpy cast branches like ret.dtype.type(x)
@@ -1117,6 +1153,8 @@ class Pair:
 
     def __getitem__(self, key):
         """Slicing and integer indexing; 1-D is just the N=1 case."""
+        if isinstance(key, tuple) and key == ():
+            return self  # numpy's 0-d unwrap idiom, vals[()]
         if self._axis_bounds is None:
             raise TypeError("scalar Pair is not subscriptable")
         parts = key if isinstance(key, tuple) else (key,)
@@ -1156,6 +1194,30 @@ class Pair:
     def __array_ufunc__(self, ufunc, method, *inputs, out=None, **kwargs):
         if out is not None:
             raise NotImplementedError("out= is not supported (mutation)")
+        if method == "reduce" and ufunc in (np.maximum, np.minimum, np.add):
+            a = inputs[0]
+            axis = kwargs.get("axis", 0)
+            if (
+                isinstance(a, Pair)
+                and a._axis_bounds is not None
+                and len(a._axis_bounds) == 1
+                and axis in (0, None)
+            ):
+                if ufunc is np.add:
+                    from .maps.numpy import _sum
+
+                    return _sum(a)
+                lo, hi = a._axis_bounds[0]
+                if hi - lo <= 4096:
+                    sym = axis_idx(0)
+                    op = sympy.Max if ufunc is np.maximum else sympy.Min
+                    formula = op(
+                        *[a.formula.subs(sym, k) for k in range(lo, hi)],
+                        evaluate=False,  # canonical sorting of n large args is quadratic
+                    )
+                    return Pair(
+                        ufunc.reduce(a.value), formula, None, steps=(a,)
+                    )
         if method != "__call__" or kwargs.get("out") is not None:
             raise NotImplementedError(f"{ufunc.__name__}.{method} not supported")
 
@@ -1218,10 +1280,17 @@ class Pair:
         # the routine gets COPIES: overwrite_ab-style scribbling stays
         # off the traced values, and the snapshot guard keeps everyone
         # honest about it
-        values = [
-            np.array(v, copy=True) if isinstance(v, np.ndarray) else v
-            for v in (Pair._value_of(a) for a in args)
-        ]
+        def _numeric(v):
+            if isinstance(v, np.ndarray):
+                if v.dtype == object:
+                    try:  # our dtype duck leaks into allocations
+                        return np.asarray(v, dtype=float)
+                    except (TypeError, ValueError):
+                        return np.array(v, copy=True)
+                return np.array(v, copy=True)
+            return v
+
+        values = [_numeric(Pair._value_of(a)) for a in args]
         kwvalues = {
             k: (np.array(v, copy=True) if isinstance(v, np.ndarray) else v)
             for k, v in ((k, Pair._value_of(v)) for k, v in kwargs.items())
