@@ -41,6 +41,8 @@ OPAQUE_CALLABLES = {
     "solve",
     "lstsq",
     "_lstsq",
+    "svd",
+    "pinv",
 }
 NEUTRAL_METHODS = {"toarray", "astype", "copy", "view"}
 CONCRETE = {"isfinite", "isnan", "isinf"}  # validation checks, not math
@@ -86,8 +88,15 @@ def _skv_empty(shape, dtype=None, **kwargs):
 
 def _skv_neutral(a, dtype=None, **kwargs):
     if isinstance(a, Pair):
-        value = np.ascontiguousarray(a.value, dtype=dtype)
+        value = a.value
+        if isinstance(value, np.ndarray) and value.dtype == object:
+            value = Pair._value_of(value)  # value lane holding Pairs
+        value = np.ascontiguousarray(value, dtype=dtype)
         return Pair(value, a.formula, a._axis_bounds, steps=(a,))
+    if isinstance(a, np.ndarray) and a.dtype == object:
+        unwrapped = Pair._value_of(a)
+        if unwrapped is not a:
+            return a  # object array OF Pairs: keep the traced elements
     return np.asarray(a, dtype=dtype)
 
 
@@ -130,6 +139,15 @@ def _skv_concrete(name, a, *args, **kwargs):
 
 def _skv_scalarize(kind, x):
     return kind(Pair._value_of(x))
+
+
+def _skv_isinstance(obj, types):
+    # inside instrumented code a Pair IS an ndarray for gate purposes
+    if isinstance(obj, Pair):
+        tt = types if isinstance(types, tuple) else (types,)
+        if any(t is np.ndarray for t in tt):
+            return True
+    return isinstance(obj, types)
 
 
 def _skv_namespace(*args, **kwargs):
@@ -216,10 +234,31 @@ def _skv_maybe(fn):
     cannot dodge them."""
     if getattr(fn, "__name__", None) in OPAQUE_CALLABLES:
         return _skv_opaque(fn)
+    if inspect.isclass(fn):
+        # classes reached through variables (dispatch tables) twin at
+        # runtime; the cache makes this once per class
+        try:
+            twin, _ = _instrument_class(fn, 3, set())
+            return twin
+        except (OSError, TypeError, SyntaxError, KeyError, AttributeError):
+            return fn
+    if inspect.isfunction(fn) and not getattr(fn, "__closure__", None):
+        mod = getattr(fn, "__module__", "") or ""
+        if not mod.startswith(("builtins", "skverify")) and "__skv" not in fn.__name__:
+            if fn in _FN_MEMO:
+                sub, sub_sites = _FN_MEMO[fn]
+            else:
+                try:
+                    sub, sub_sites = _instrument(fn, 0, set())
+                except (OSError, TypeError, SyntaxError, KeyError, AttributeError):
+                    sub, sub_sites = fn, ()
+                _FN_MEMO[fn] = (sub, sub_sites)
+            return sub if sub_sites else fn
+        return fn
     if (
         inspect.isfunction(fn)
         or inspect.ismethod(fn)
-        or isinstance(fn, (type, np.ufunc))
+        or isinstance(fn, np.ufunc)
         or getattr(fn, "__module__", None) == "builtins"
         or hasattr(fn, "__wrapped__")  # numpy dispatchers: the protocol handles them
     ):
@@ -373,6 +412,9 @@ class _Rewriter(ast.NodeTransformer):
                 args=[ast.Constant(value=name)] + node.args,
                 keywords=node.keywords,
             )
+        elif name == "isinstance" and isinstance(node.func, ast.Name):
+            self.sites.append("isinstance -> Pair counts as ndarray")
+            node.func = ast.Name(id="__skv_isinstance__", ctx=ast.Load())
         elif name in SCALARIZE and isinstance(node.func, ast.Name):
             self.sites.append(f"{name} -> concrete scalar")
             node = ast.Call(
@@ -380,6 +422,14 @@ class _Rewriter(ast.NodeTransformer):
                 args=[node.func] + node.args,
                 keywords=[],
             )
+        elif name == "super" and not node.args:
+            # re-exec'd methods lose the __class__ cell zero-arg super()
+            # needs; the twin class is injected as __skv_class__
+            node.args = [
+                ast.Name(id="__skv_class__", ctx=ast.Load()),
+                ast.Name(id="self", ctx=ast.Load()),
+            ]
+            self.sites.append("super() -> explicit twin super")
         elif name == "array_namespace":
             self.sites.append("array_namespace -> numpy (compat layer skipped)")
             node.func = ast.Name(id="__skv_namespace__", ctx=ast.Load())
@@ -504,6 +554,7 @@ def _instrument(fn, depth, seen):
     namespace["__skv_namespace__"] = _skv_namespace
     namespace["__skv_concrete__"] = _skv_concrete
     namespace["__skv_scalarize__"] = _skv_scalarize
+    namespace["__skv_isinstance__"] = _skv_isinstance
     namespace["__skv_concrete_call__"] = _skv_concrete_call
     namespace["__skv_opaque_out__"] = _skv_opaque_out
     namespace["__skv_loop_iter__"] = _loop_iter
@@ -534,17 +585,37 @@ def _instrument(fn, depth, seen):
                 sites.append(f"{name}: decorator unwrapped")
                 sites.extend(f"{name}: {t}" for t in sub_sites)
                 continue
+            if inspect.isclass(callee):
+                try:
+                    twin, twin_sites = _instrument_class(callee, depth, seen)
+                except (OSError, TypeError, SyntaxError, KeyError, AttributeError):
+                    continue
+                if twin_sites:
+                    namespace[name] = twin
+                    sites.extend(f"{name}: {t}" for t in twin_sites)
+                continue
             if (
                 inspect.isfunction(callee)
                 and not getattr(callee, "__closure__", None)
                 and callee.__module__ not in (None, "builtins")
-                and callee.__name__ not in seen
             ):
-                seen.add(callee.__name__)
-                try:
-                    sub, sub_sites = _instrument(callee, depth - 1, seen)
-                except (OSError, TypeError, SyntaxError, KeyError, AttributeError):
-                    continue
+                if callee in _FN_MEMO:
+                    sub, sub_sites = _FN_MEMO[callee]
+                elif callee.__name__ in seen:
+                    continue  # cycle guard only; memo handles reuse
+                else:
+                    seen.add(callee.__name__)
+                    try:
+                        sub, sub_sites = _instrument(callee, depth - 1, seen)
+                    except (
+                        OSError,
+                        TypeError,
+                        SyntaxError,
+                        KeyError,
+                        AttributeError,
+                    ):
+                        continue
+                    _FN_MEMO[callee] = (sub, sub_sites)
                 if sub_sites:
                     namespace[name] = sub
                     sites.extend(f"{name}: {s}" for s in sub_sites)
@@ -552,3 +623,79 @@ def _instrument(fn, depth, seen):
     code = compile(tree, filename=f"<instrumented {fn.__name__}>", mode="exec")
     exec(code, namespace)
     return namespace[fdef.name], tuple(sites)
+
+
+_CLASS_TWINS = {}
+_FN_MEMO = {}  # instrumented-callee reuse across namespaces (class methods)
+
+
+def _instrument_class(C, depth, seen):
+    """A parallel twin of the class: every method instrumented, the
+    base twinned too so super() chains stay instrumented. Returns
+    (twin_or_C, sites)."""
+    if C in _CLASS_TWINS:
+        return _CLASS_TWINS[C]
+    if (
+        not inspect.isclass(C)
+        or C is object
+        or C.__module__ in (None, "builtins")
+        or len(C.__bases__) != 1
+    ):
+        return C, ()
+    key = f"class:{C.__module__}.{C.__qualname__}"
+    if key in seen:
+        return C, ()
+    seen.add(key)
+
+    base, base_sites = (
+        _instrument_class(C.__bases__[0], depth, seen)
+        if C.__bases__[0] is not object
+        else (object, ())
+    )
+    members = {
+        k: v
+        for k, v in vars(C).items()
+        if k not in ("__dict__", "__weakref__")
+    }
+    slots = members.pop("__slots__", None)
+    if slots is not None:
+        # the twin gets a plain __dict__; slot descriptors would clash
+        for slot in ((slots,) if isinstance(slots, str) else slots):
+            members.pop(slot, None)
+    sites = [f"{C.__name__}(base): {t}" for t in base_sites]
+    patch_namespaces = []
+    for name, raw in list(members.items()):
+        wrap, target = None, None
+        if isinstance(raw, staticmethod):
+            target, wrap = raw.__func__, staticmethod
+        elif isinstance(raw, classmethod):
+            target, wrap = raw.__func__, classmethod
+        elif inspect.isfunction(raw):
+            target = raw
+        if target is None or not inspect.isfunction(target):
+            continue  # classmethod(GenericAlias) and similar non-functions
+        freevars = getattr(target.__code__, "co_freevars", ())
+        if any(v != "__class__" for v in freevars):
+            continue  # real closures don't survive re-exec; the
+            # __class__ cell is fine: super() is rewritten explicit
+        try:
+            tree_fn = _instrument(target, depth - 1, seen)
+        except (OSError, TypeError, SyntaxError, KeyError, AttributeError):
+            continue
+        sub, sub_sites = tree_fn
+        if sub_sites:
+            members[name] = wrap(sub) if wrap else sub
+            patch_namespaces.append(sub.__globals__)
+            sites.extend(f"{C.__name__}.{name}: {t}" for t in sub_sites)
+    if not sites:
+        _CLASS_TWINS[C] = (C, ())
+        return C, ()
+    try:
+        twin = type(C.__name__, (base,), members)
+    except TypeError:
+        _CLASS_TWINS[C] = (C, ())
+        return C, ()
+    for ns in patch_namespaces:
+        ns["__skv_class__"] = twin
+    _CLASS_TWINS[C] = (twin, tuple(sites))
+    return twin, tuple(sites)

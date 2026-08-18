@@ -76,7 +76,11 @@ _attach_ufunc_methods()
 # FUNCTION TABLE (non-UFUNCS)
 
 
-def _where(cond, a, b):
+def _where(cond, a=None, b=None):
+    if a is None and b is None:
+        # single-arg where is nonzero-position discovery: a concrete
+        # fact about this trace, like searchsorted's bisection
+        return np.where(np.asarray(Pair._value_of(cond), dtype=bool))
     domain = Pair._merge_domains(
         Pair._domain_of(cond), Pair._domain_of(a), Pair._domain_of(b)
     )
@@ -364,7 +368,40 @@ def _astype(a, dtype, copy=True, **kwargs):
     return np.astype(a, dtype, copy=copy, **kwargs)
 
 
+def _diag(v, k=0):
+    if not isinstance(v, Pair) or k != 0:
+        return np.diag(Pair._value_of(v), k)
+    i, j = axis_idx(0), axis_idx(1)
+    if v._axis_bounds is not None and len(v._axis_bounds) == 1:
+        # vector -> diagonal matrix: D[i, j] = v[i] when i == j else 0
+        n = v._axis_bounds[0]
+        return Pair(
+            np.diag(v.value),
+            sympy.Piecewise((v.formula, sympy.Eq(i, j)), (0, True)),
+            (n, n),
+            steps=(v,),
+        )
+    if v._axis_bounds is not None and len(v._axis_bounds) == 2:
+        # matrix -> its diagonal: d[i] = M[i, i]
+        lo = min(hi - lo for lo, hi in v._axis_bounds)
+        return Pair(
+            np.diag(v.value),
+            v.formula.subs(j, i),
+            (0, lo),
+            steps=(v,),
+        )
+    return np.diag(Pair._value_of(v), k)
+
+
+FUNCTION_TABLE[np.diag] = _diag
 FUNCTION_TABLE[np.astype] = _astype
+FUNCTION_TABLE[np.linalg.matrix_rank] = _concrete_check(np.linalg.matrix_rank)
+FUNCTION_TABLE[np.linalg.svd] = lambda *a, **k: Pair._opaque_call(
+    np.linalg.svd, a, k
+)
+FUNCTION_TABLE[np.linalg.pinv] = lambda *a, **k: Pair._opaque_call(
+    np.linalg.pinv, a, k
+)
 FUNCTION_TABLE[np.allclose] = _concrete_check(np.allclose)
 FUNCTION_TABLE[np.isclose] = _concrete_check(np.isclose)
 

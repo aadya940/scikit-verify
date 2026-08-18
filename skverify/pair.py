@@ -1073,6 +1073,33 @@ class Pair:
     def flags(self):
         return np.asarray(self.value).flags
 
+    def mean(self, axis=None, **kwargs):
+        from .maps.numpy import _sum
+
+        if self._axis_bounds is None:
+            return self
+        if axis is None:
+            n = int(np.prod([hi - lo for lo, hi in self._axis_bounds]))
+            return _sum(self) / n
+        k = axis % len(self._axis_bounds)
+        lo, hi = self._axis_bounds[k]
+        return _sum(self, axis=k) / (hi - lo)
+
+    def sum(self, axis=None, **kwargs):
+        from .maps.numpy import _sum
+
+        return _sum(self, axis=axis)
+
+    def max(self, axis=None, **kwargs):
+        return np.maximum.reduce(self, axis=axis, **kwargs)
+
+    def min(self, axis=None, **kwargs):
+        return np.minimum.reduce(self, axis=axis, **kwargs)
+
+    def squeeze(self, axis=None):
+        # removing extent-1 axes is a layout-preserving reshape
+        return self.reshape(np.squeeze(np.asarray(self.value), axis=axis).shape)
+
     def astype(self, dtype=None, copy=True, **kwargs):
         # float cast is math-neutral; a real reinterpretation would lie
         if dtype is not None and np.dtype(dtype).kind not in "fc":
@@ -1182,10 +1209,36 @@ class Pair:
         parts = key if isinstance(key, tuple) else (key,)
         if not any(is_index_array(k) for k in parts):
             return None
+        if any(
+            is_index_array(k) and np.asarray(k).ndim == 0 for k in parts
+        ):  # 0-d index arrays are ints in disguise
+            norm = tuple(
+                int(np.asarray(k))
+                if is_index_array(k) and np.asarray(k).ndim == 0
+                else k
+                for k in parts
+            )
+            return self[norm if len(norm) > 1 else norm[0]]
+
+        def is_full(k):
+            return isinstance(k, slice) and k == slice(None)
+
         if not all(is_index_array(k) for k in parts):
+            if sum(is_index_array(k) for k in parts) == 1 and all(
+                is_index_array(k) or is_full(k) for k in parts
+            ):
+                # X[:, cols]: gather along ONE axis, others untouched
+                ax = next(
+                    i for i, k in enumerate(parts) if is_index_array(k)
+                )
+                idx = np.asarray(parts[ax])
+                if idx.ndim == 1 and 1 <= idx.size <= 4096:
+                    return self._axis_gather(ax, idx, key)
             raise NotImplementedError("mixed fancy/slice indexing not supported")
         if len(parts) == 1:
             idx = np.asarray(parts[0])
+            if idx.ndim == 1 and idx.size == 1:
+                return self._axis_gather(0, idx, key)
             if idx.ndim == 1 and 2 <= idx.size <= 4096:
                 strides = np.diff(idx)
                 if len(set(strides.tolist())) != 1:
@@ -1236,33 +1289,129 @@ class Pair:
             out[pos] = self[idx if len(idx) > 1 else idx[0]]
         return out
 
+    def _axis_gather(self, ax, idx, key):
+        """Gather along one axis: affine indices remap, irregular ones
+        go through a recorded table."""
+        sym = axis_idx(ax)
+        strides = np.diff(idx) if idx.size >= 2 else np.array([1])
+        value = self.value[key]
+        if isinstance(value, np.ndarray):
+            value = value.copy()
+        bounds = (
+            tuple(self._axis_bounds[:ax])
+            + ((0, int(idx.size)),)
+            + tuple(self._axis_bounds[ax + 1 :])
+        )
+        if len(set(strides.tolist())) == 1:
+            d, start = int(strides[0]), int(idx[0])
+            index_map = {sym: d * sym + start}
+            index_map.update(
+                {
+                    axis_idx(a): axis_idx(a)
+                    for a in range(len(self._axis_bounds))
+                    if a != ax
+                }
+            )
+            return self._remap(value, index_map, bounds)
+        name = f"gather_{len(_OPAQUE)}"
+        table = sympy.IndexedBase(name)
+        formula = self.formula.subs(sym, table[sym])
+        _OPAQUE.append(
+            (
+                name,
+                (("table", "concrete"),),
+                (str(table[sym]), f"{name} = {idx.tolist()}"),
+            )
+        )
+        return Pair(value, formula, bounds, steps=(self,))
+
     def __array_ufunc__(self, ufunc, method, *inputs, out=None, **kwargs):
         if out is not None:
             raise NotImplementedError("out= is not supported (mutation)")
         if method == "reduce" and ufunc in (np.maximum, np.minimum, np.add):
             a = inputs[0]
             axis = kwargs.get("axis", 0)
-            if (
+            full = axis is None or (
                 isinstance(a, Pair)
                 and a._axis_bounds is not None
                 and len(a._axis_bounds) == 1
-                and axis in (0, None)
-            ):
-                if ufunc is np.add:
+                and axis == 0
+            )
+            if isinstance(a, Pair) and a._axis_bounds is not None and full:
+                if ufunc is np.add and len(a._axis_bounds) == 1:
                     from .maps.numpy import _sum
 
                     return _sum(a)
-                lo, hi = a._axis_bounds[0]
-                if hi - lo <= 4096:
-                    sym = axis_idx(0)
+                extents = [hi - lo for lo, hi in a._axis_bounds]
+                if ufunc is not np.add and int(np.prod(extents)) <= 4096:
+                    letters = [
+                        axis_idx(ax) for ax in range(len(a._axis_bounds))
+                    ]
                     op = sympy.Max if ufunc is np.maximum else sympy.Min
+                    elems = [
+                        a.formula.subs(
+                            dict(zip(letters, pos)), simultaneous=True
+                        )
+                        for pos in np.ndindex(*extents)
+                    ]
                     formula = op(
-                        *[a.formula.subs(sym, k) for k in range(lo, hi)],
+                        *elems,
                         evaluate=False,  # canonical sorting of n large args is quadratic
                     )
                     return Pair(
-                        ufunc.reduce(a.value), formula, None, steps=(a,)
+                        ufunc.reduce(a.value, axis=None),
+                        formula,
+                        None,
+                        steps=(a,),
                     )
+            if (
+                isinstance(a, Pair)
+                and a._axis_bounds is not None
+                and isinstance(axis, int)
+                and ufunc is not np.add
+            ):
+                bounds = a._axis_bounds
+                k_ax = axis % len(bounds)
+                lo, hi = bounds[k_ax]
+                if hi - lo <= 4096:
+                    # per-axis Max/Min: bind one letter over its concrete
+                    # range, survivors renumber down (the letter invariant)
+                    rename = {
+                        axis_idx(ax): axis_idx(ax - 1)
+                        for ax in range(k_ax + 1, len(bounds))
+                    }
+                    op = sympy.Max if ufunc is np.maximum else sympy.Min
+                    elems = [
+                        a.formula.subs(
+                            {axis_idx(k_ax): v, **rename}, simultaneous=True
+                        )
+                        for v in range(lo, hi)
+                    ]
+                    formula = op(*elems, evaluate=False)
+                    new_bounds = bounds[:k_ax] + bounds[k_ax + 1 :]
+                    return Pair(
+                        ufunc.reduce(a.value, axis=k_ax),
+                        formula,
+                        new_bounds or None,
+                        steps=(a,),
+                    )
+            if (
+                isinstance(a, np.ndarray)
+                and a.dtype == object
+                and a.size <= 4096
+                and all(isinstance(e, Pair) for e in a.ravel())
+                and ufunc is not np.add
+            ):
+                op = sympy.Max if ufunc is np.maximum else sympy.Min
+                formula = op(
+                    *[e.formula for e in a.ravel()], evaluate=False
+                )
+                return Pair(
+                    ufunc.reduce(Pair._value_of(a), axis=None),
+                    formula,
+                    None,
+                    steps=tuple(a.ravel()),
+                )
         if method != "__call__" or kwargs.get("out") is not None:
             raise NotImplementedError(f"{ufunc.__name__}.{method} not supported")
 
