@@ -393,6 +393,65 @@ def _diag(v, k=0):
     return np.diag(Pair._value_of(v), k)
 
 
+def _mean(a, axis=None, **kwargs):
+    if isinstance(a, Pair):
+        return a.mean(axis=axis)
+    if (
+        isinstance(a, np.ndarray)
+        and a.dtype == object
+        and axis is None
+        and any(isinstance(e, Pair) for e in a.ravel())
+    ):
+        return _sum(a) / a.size  # element dunders keep the trace
+    return np.mean(np.asarray(Pair._value_of(a), dtype=float), axis=axis, **kwargs)
+
+
+def _var(a, axis=None, ddof=0, correction=None, **kwargs):
+    if correction is not None:
+        ddof = correction  # the array-api spelling of ddof
+    if not isinstance(a, Pair) or axis is not None:
+        return np.var(np.asarray(Pair._value_of(a), dtype=float), axis=axis, ddof=ddof)
+    n = int(np.prod([hi - lo for lo, hi in a._axis_bounds]))
+    centered = a - a.mean()
+    return _sum(centered * centered) / (n - ddof)
+
+
+def _std(a, axis=None, ddof=0, correction=None, **kwargs):
+    return _var(a, axis=axis, ddof=ddof, correction=correction, **kwargs) ** 0.5
+
+
+def _median(a, axis=None, **kwargs):
+    if not isinstance(a, Pair) or axis is not None or len(a._axis_bounds or ()) != 1:
+        return np.median(np.asarray(Pair._value_of(a), dtype=float), axis=axis)
+    from ..pair import _GUARDS
+
+    vals = np.asarray(a.value, dtype=float)
+    order = np.argsort(vals, kind="stable")
+    sym = axis_idx(0)
+    # the selection is path-scoped: the sorted order holds for THIS
+    # input, recorded as explicit ordering preconditions
+    for k in range(len(order) - 1):
+        _GUARDS.append(
+            sympy.Le(
+                a.formula.subs(sym, int(order[k])),
+                a.formula.subs(sym, int(order[k + 1])),
+            )
+        )
+    mid = len(order) // 2
+    if len(order) % 2:
+        formula = a.formula.subs(sym, int(order[mid]))
+    else:
+        formula = (
+            a.formula.subs(sym, int(order[mid - 1]))
+            + a.formula.subs(sym, int(order[mid]))
+        ) / 2
+    return Pair(np.median(vals), formula, None, steps=(a,))
+
+
+FUNCTION_TABLE[np.median] = _median
+FUNCTION_TABLE[np.mean] = _mean
+FUNCTION_TABLE[np.var] = _var
+FUNCTION_TABLE[np.std] = _std
 FUNCTION_TABLE[np.diag] = _diag
 FUNCTION_TABLE[np.astype] = _astype
 FUNCTION_TABLE[np.linalg.matrix_rank] = _concrete_check(np.linalg.matrix_rank)

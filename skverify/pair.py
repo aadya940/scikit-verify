@@ -1126,10 +1126,13 @@ class Pair:
 
     @property
     def dtype(self):
-        # object, deliberately: numpy cast branches like ret.dtype.type(x)
-        # become passthroughs instead of float(Pair) deaths. The concrete
-        # lane's real dtype is np.asarray(self.value).dtype if ever needed.
-        return np.dtype(object)
+        # the TRUTH: the concrete lane's numeric dtype. (An object duck
+        # lived here once, for numpy's mean cast branch -- Pair.mean made
+        # it obsolete, and the lie leaked into every finfo/kind gate.)
+        value = np.asarray(self.value)
+        if value.dtype == object:
+            return np.dtype(float)
+        return value.dtype
 
     def __truediv__(self, other):  # self / other
         mine, theirs, merged = Pair._broadcast(self, other)

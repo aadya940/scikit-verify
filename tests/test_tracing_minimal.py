@@ -40,9 +40,9 @@ class TestDuckFacts:
         u = Pair.array("u", np.zeros((4, 7)))
         assert u.ndim == 2
         assert u.shape == (4, 7)
-        # object, deliberately: numpy cast branches (ret.dtype.type(x))
-        # become passthroughs instead of float(Pair) deaths
-        assert u.dtype == np.dtype(object)
+        # the truth: dtype gates (finfo, kind checks) pass natively;
+        # cast branches are rewritten sites in instrumented twins
+        assert u.dtype == np.dtype(float)
 
     def test_scalar_pair_facts(self):
         x = Pair(3.0, sympy.Symbol("x"))

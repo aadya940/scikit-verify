@@ -44,7 +44,7 @@ OPAQUE_CALLABLES = {
     "svd",
     "pinv",
 }
-NEUTRAL_METHODS = {"toarray", "astype", "copy", "view"}
+NEUTRAL_METHODS = {"toarray", "astype", "copy", "view", "type"}
 CONCRETE = {"isfinite", "isnan", "isinf"}  # validation checks, not math
 SCALARIZE = {"float", "int"}  # scalar coercion at a compiled boundary
 # compiled lookups whose result is bookkeeping (an interval index),
@@ -101,6 +101,8 @@ def _skv_neutral(a, dtype=None, **kwargs):
 
 
 def _skv_method(name, obj, *args, **kwargs):
+    if name == "type" and args and isinstance(args[0], Pair):
+        return args[0]  # ret.dtype.type(x): a cast on a traced scalar
     if (
         isinstance(obj, np.ndarray)
         and obj.dtype == object
@@ -269,6 +271,21 @@ def _skv_maybe(fn):
                 _FN_MEMO[fn] = (sub, sub_sites)
             return sub if sub_sites else fn
         return fn
+    if hasattr(fn, "__wrapped__") and not inspect.isfunction(fn):
+        # numpy dispatcher: the protocol handles Pair args, but OBJECT
+        # arrays of Pairs bypass it -- route those through our table
+        from .registry import FUNCTION_TABLE
+
+        entry = FUNCTION_TABLE.get(fn)
+        if entry is None:
+            return fn
+
+        def dispatcher_shim(*args, **kwargs):
+            if any(_traced(a) and not isinstance(a, Pair) for a in args):
+                return entry(*args, **kwargs)
+            return fn(*args, **kwargs)
+
+        return dispatcher_shim
     if (
         inspect.isfunction(fn)
         or inspect.ismethod(fn)
@@ -679,6 +696,13 @@ def _instrument_class(C, depth, seen):
     sites = [f"{C.__name__}(base): {t}" for t in base_sites]
     patch_namespaces = []
     for name, raw in list(members.items()):
+        if name in (
+            "__getattribute__",
+            "__getattr__",
+            "__setattr__",
+            "__delattr__",
+        ):
+            continue  # attribute plumbing: instrumenting it recurses
         wrap, target = None, None
         if isinstance(raw, staticmethod):
             target, wrap = raw.__func__, staticmethod
