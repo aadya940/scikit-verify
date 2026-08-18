@@ -1166,7 +1166,10 @@ class Pair:
                 # a concrete operand: named, so the formula never hides it
                 formulas.append(sympy.Symbol(f"const{n_const}"))
                 n_const += 1
-        call = sympy.Function(func.__name__)(*formulas)
+        # f2py fortran objects report __name__ as "function dgbsv":
+        # keep the identifier part only
+        fname = getattr(func, "__name__", "opaque").split()[-1]
+        call = sympy.Function(fname)(*formulas)
         if isinstance(result, tuple):
             # multi-output routine (LAPACK gbsv: lu, piv, x, info): each
             # float-array output becomes its own atom; integer bookkeeping
@@ -1175,7 +1178,7 @@ class Pair:
             for pos, res in enumerate(result):
                 if isinstance(res, np.ndarray) and res.dtype.kind in "fc":
                     base = sympy.IndexedBase(
-                        f"{func.__name__}_{len(_OPAQUE)}_{pos}"
+                        f"{fname}_{len(_OPAQUE)}_{pos}"
                     )
                     letters = tuple(axis_idx(ax) for ax in range(res.ndim))
                     outs.append(
@@ -1189,15 +1192,15 @@ class Pair:
                 else:
                     outs.append(res)
             _OPAQUE.append(
-                check_call(func.__name__, values, result)
-                + ((f"{func.__name__}_{len(_OPAQUE)}_*", str(call)),)
+                check_call(fname, values, result)
+                + ((f"{fname}_{len(_OPAQUE)}_*", str(call)),)
             )
             return tuple(outs)
         shape = np.shape(result) if hasattr(result, "shape") else ()
         if shape:
             # array output: a fresh indexed symbol, so downstream slicing
             # and arithmetic work; the definition rides in the record
-            base = sympy.IndexedBase(f"{func.__name__}_{len(_OPAQUE)}")
+            base = sympy.IndexedBase(f"{fname}_{len(_OPAQUE)}")
             letters = tuple(axis_idx(ax) for ax in range(len(shape)))
             formula = base[letters]
             domain = tuple((0, int(n)) for n in shape)
@@ -1205,7 +1208,7 @@ class Pair:
             formula = call
             domain = None
         _OPAQUE.append(
-            check_call(func.__name__, values, result) + ((str(formula), str(call)),)
+            check_call(fname, values, result) + ((str(formula), str(call)),)
         )
         return Pair(result, formula, domain=domain, steps=Pair._steps_of(*args))
 
