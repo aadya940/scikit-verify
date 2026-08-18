@@ -602,6 +602,17 @@ class Pair:
                 )
         return tuple(merged)
 
+
+    @staticmethod
+    def _defers(other):
+        """Pair op object-array-of-Pairs: defer to numpy's object loop
+        (elementwise dunders), the honest per-element route."""
+        return (
+            isinstance(other, np.ndarray)
+            and other.dtype == object
+            and any(isinstance(e, Pair) for e in other.ravel())
+        )
+
     @staticmethod
     def _binary(inputs, fwd, rev, self):
         a, b = inputs
@@ -837,6 +848,17 @@ class Pair:
                 )
                 self._record_write(prior, key, val)
                 return
+            kv = np.asarray(key.value)
+            if kv.dtype.kind in "iu" or (
+                kv.dtype.kind == "f" and np.all(kv == np.round(kv))
+            ):
+                # a traced index (vector or scalar): the positions are
+                # concrete trace facts (argsort outputs and friends)
+                if kv.ndim == 0:
+                    self[int(kv)] = val
+                else:
+                    self[kv.astype(int)] = val
+                return
             raise NotImplementedError("only boolean Pair keys are supported")
 
         lengths = tuple(hi - lo for lo, hi in self._axis_bounds)
@@ -968,6 +990,8 @@ class Pair:
         )
 
     def __add__(self, other):
+        if Pair._defers(other):
+            return NotImplemented
         mine, theirs, merged = Pair._broadcast(self, other)
         return Pair(
             value=self.value + Pair._value_of(other),
@@ -976,10 +1000,14 @@ class Pair:
             steps=Pair._steps_of(self, other),
         )
 
-    def __radd__(self, other):  # handles  2 + u
+    def __radd__(self, other):
+        if Pair._defers(other):
+            return NotImplemented  # handles  2 + u
         return self.__add__(other)
 
     def __sub__(self, other):
+        if Pair._defers(other):
+            return NotImplemented
         mine, theirs, merged = Pair._broadcast(self, other)
         return Pair(
             value=self.value - Pair._value_of(other),
@@ -988,7 +1016,9 @@ class Pair:
             steps=Pair._steps_of(self, other),
         )
 
-    def __rsub__(self, other):  # handles  2 - u   (order matters!)
+    def __rsub__(self, other):
+        if Pair._defers(other):
+            return NotImplemented  # handles  2 - u   (order matters!)
         mine, theirs, merged = Pair._broadcast(self, other)
         return Pair(
             value=Pair._value_of(other) - self.value,
@@ -998,6 +1028,8 @@ class Pair:
         )
 
     def __mul__(self, other):
+        if Pair._defers(other):
+            return NotImplemented
         mine, theirs, merged = Pair._broadcast(self, other)
         return Pair(
             value=self.value * Pair._value_of(other),
@@ -1009,6 +1041,8 @@ class Pair:
     __rmul__ = __mul__
 
     def __mod__(self, other):
+        if Pair._defers(other):
+            return NotImplemented
         mine, theirs, merged = Pair._broadcast(self, other)
         return Pair(
             value=self.value % Pair._value_of(other),
@@ -1018,6 +1052,8 @@ class Pair:
         )
 
     def __rmod__(self, other):
+        if Pair._defers(other):
+            return NotImplemented
         mine, theirs, merged = Pair._broadcast(self, other)
         return Pair(
             value=Pair._value_of(other) % self.value,
@@ -1240,7 +1276,9 @@ class Pair:
             return np.dtype(float)
         return value.dtype
 
-    def __truediv__(self, other):  # self / other
+    def __truediv__(self, other):
+        if Pair._defers(other):
+            return NotImplemented  # self / other
         mine, theirs, merged = Pair._broadcast(self, other)
         return Pair(
             value=self.value / Pair._value_of(other),
@@ -1249,7 +1287,9 @@ class Pair:
             steps=Pair._steps_of(self, other),
         )
 
-    def __rtruediv__(self, other):  # other / self
+    def __rtruediv__(self, other):
+        if Pair._defers(other):
+            return NotImplemented  # other / self
         mine, theirs, merged = Pair._broadcast(self, other)
         return Pair(
             value=Pair._value_of(other) / self.value,
@@ -1258,7 +1298,9 @@ class Pair:
             steps=Pair._steps_of(self, other),
         )
 
-    def __pow__(self, other):  # self ** other
+    def __pow__(self, other):
+        if Pair._defers(other):
+            return NotImplemented  # self ** other
         mine, theirs, merged = Pair._broadcast(self, other)
         return Pair(
             value=self.value ** Pair._value_of(other),
@@ -1267,7 +1309,9 @@ class Pair:
             steps=Pair._steps_of(self, other),
         )
 
-    def __rpow__(self, other):  # other ** self
+    def __rpow__(self, other):
+        if Pair._defers(other):
+            return NotImplemented  # other ** self
         mine, theirs, merged = Pair._broadcast(self, other)
         return Pair(
             value=Pair._value_of(other) ** self.value,
@@ -1556,6 +1600,20 @@ class Pair:
                 )
         if method != "__call__" or kwargs.get("out") is not None:
             raise NotImplementedError(f"{ufunc.__name__}.{method} not supported")
+
+        if any(
+            isinstance(x, np.ndarray)
+            and x.dtype == object
+            and any(isinstance(e, Pair) for e in x.ravel())
+            for x in inputs
+        ):
+            # a decompressed operand: decompress the Pair side too and
+            # let numpy's object loop run element by element through
+            # the attached methods -- honest per-element formulas
+            conv = [
+                np.asarray(x) if isinstance(x, Pair) else x for x in inputs
+            ]
+            return ufunc(*conv, **kwargs)
 
         if ufunc is np.add:
             return Pair._binary(inputs, Pair.__add__, Pair.__radd__, self)

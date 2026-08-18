@@ -500,6 +500,19 @@ FUNCTION_TABLE[np.median] = _median
 FUNCTION_TABLE[np.mean] = _mean
 FUNCTION_TABLE[np.var] = _var
 FUNCTION_TABLE[np.std] = _std
+def _broadcast_to(a, shape, **kwargs):
+    if not isinstance(a, Pair):
+        return np.broadcast_to(Pair._numeric(np.asarray(a), copy=False), shape)
+    shape = tuple(int(n) for n in (shape if np.iterable(shape) else (shape,)))
+    value = np.broadcast_to(a.value, shape).copy()
+    bounds = a._axis_bounds or ()
+    formula = Pair._shift_axes(a.formula, bounds, len(shape))
+    merged = tuple((0, n) for n in shape)
+    formula = Pair._pin_ones(formula, bounds, merged)
+    return Pair(value, formula, merged, steps=(a,))
+
+
+FUNCTION_TABLE[np.broadcast_to] = _broadcast_to
 FUNCTION_TABLE[np.diag] = _diag
 FUNCTION_TABLE[np.astype] = _astype
 FUNCTION_TABLE[np.linalg.matrix_rank] = _concrete_check(np.linalg.matrix_rank)

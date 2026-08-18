@@ -671,8 +671,14 @@ def _instrument(fn, depth, seen):
     if fdef.decorator_list:
         # transparent decorators (metadata-only, returned the original
         # function: no closure, no __wrapped__) are safe to strip; a
-        # wrapping decorator changes semantics, so bail
-        if getattr(fn, "__wrapped__", None) is not None or fn.__closure__:
+        # wrapping decorator changes semantics, so bail. A __class__
+        # cell alone is fine: super() is rewritten explicit
+        only_class_cell = all(
+            v == "__class__" for v in fn.__code__.co_freevars
+        )
+        if getattr(fn, "__wrapped__", None) is not None or (
+            fn.__closure__ and not only_class_cell
+        ):
             raise TypeError("wrapped functions are not instrumented")
         fdef.decorator_list = []
     rewriter = _Rewriter(fn.__globals__, tag=fn.__name__)
@@ -822,12 +828,57 @@ def _instrument_class(C, depth, seen):
             target, wrap = raw.__func__, classmethod
         elif inspect.isfunction(raw):
             target = raw
+        elif callable(raw) and getattr(raw, "__wrapped__", None) is not None:
+            # decorator-wrapped method (xp_capabilities): peel to the
+            # inner function, same as module-level callees
+            inner = raw
+            while getattr(inner, "__wrapped__", None) is not None:
+                inner = inner.__wrapped__
+            if inspect.isfunction(inner):
+                target = inner
         if target is None or not inspect.isfunction(target):
             continue  # classmethod(GenericAlias) and similar non-functions
         freevars = getattr(target.__code__, "co_freevars", ())
         if any(v != "__class__" for v in freevars):
-            continue  # real closures don't survive re-exec; the
-            # __class__ cell is fine: super() is rewritten explicit
+            # a decorated method: the wrapper is a closure, but the
+            # real function underneath may not be -- peel it
+            inner = target
+            while getattr(inner, "__wrapped__", None) is not None:
+                inner = inner.__wrapped__
+            if inner is target and target.__closure__:
+                # wrappers without __wrapped__ (deprecation shims) hide
+                # the real method in a closure cell: find it by name
+                for cell in target.__closure__:
+                    try:
+                        held = cell.cell_contents
+                    except ValueError:
+                        continue
+                    if inspect.isfunction(held) and held.__name__ == name:
+                        inner = held
+                        break
+            if (
+                inner is not target
+                and inspect.isfunction(inner)
+                and all(
+                    v == "__class__"
+                    for v in getattr(inner.__code__, "co_freevars", ())
+                )
+            ):
+                target = inner
+            else:
+                chain = [target]
+                while getattr(chain[-1], "__wrapped__", None) is not None:
+                    chain.append(chain[-1].__wrapped__)
+                if any(
+                    "__class__"
+                    in getattr(getattr(f, "__code__", None), "co_freevars", ())
+                    for f in chain
+                ):
+                    # an unpeelable super()-using member: a parallel twin
+                    # would break its super chain. No twin for this class
+                    _CLASS_TWINS[C] = (C, ())
+                    return C, ()
+                continue  # real closures don't survive re-exec
         try:
             tree_fn = _instrument(target, depth - 1, seen)
         except (OSError, TypeError, SyntaxError, KeyError, AttributeError):
