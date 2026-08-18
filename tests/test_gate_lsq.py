@@ -33,3 +33,7 @@ def test_make_lsq_spline_lifts():
     assert any(n.startswith("qr_reduce") for n in names)
     assert any(n.startswith("fpback") for n in names)
     assert "fpback" in str(spl.c[0].formula)
+
+    # the disclosure rides on the returned object, Pair or not
+    assert spl.unchecked == tuple(_OPAQUE)
+    assert spl.preconditions is not None

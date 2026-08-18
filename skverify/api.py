@@ -39,12 +39,16 @@ def to_sympy(fn, *args):
         _LOOP_EVENTS.clear()
         _LOOP_STACK.clear()
         out = _repack(fn_run(*wrapped))
-    if isinstance(out, Pair):
+    try:
         # every branch taken during the trace, as one hypothesis: the
-        # formula holds for inputs satisfying these preconditions
+        # formula holds for inputs satisfying these preconditions.
+        # Attached to whatever came back -- a Pair, or a library object
+        # (BSpline) whose attributes carry the traced Pairs
         out.preconditions = sympy.And(*_GUARDS) if _GUARDS else sympy.true
         out.unchecked = tuple(_OPAQUE)
         out.instrumented = sites
+    except (AttributeError, TypeError):
+        pass  # slots-only/immutable results keep their trace in skverify.pair._OPAQUE
     return out
 
 
