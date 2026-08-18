@@ -599,8 +599,11 @@ class Pair:
             return x.value
         if isinstance(x, np.ndarray) and x.dtype == object:
             elems = x.ravel()
-            if all(isinstance(e, Pair) for e in elems):
-                return np.array([e.value for e in elems], dtype=float).reshape(x.shape)
+            if any(isinstance(e, Pair) for e in elems):
+                vals = [e.value if isinstance(e, Pair) else e for e in elems]
+                return np.array(vals, dtype=float).reshape(x.shape)
+        if isinstance(x, (list, tuple)) and any(isinstance(e, Pair) for e in x):
+            return type(x)(Pair._value_of(e) for e in x)
         return x
 
     @staticmethod
@@ -1277,10 +1280,17 @@ class Pair:
         # the routine gets COPIES: overwrite_ab-style scribbling stays
         # off the traced values, and the snapshot guard keeps everyone
         # honest about it
-        values = [
-            np.array(v, copy=True) if isinstance(v, np.ndarray) else v
-            for v in (Pair._value_of(a) for a in args)
-        ]
+        def _numeric(v):
+            if isinstance(v, np.ndarray):
+                if v.dtype == object:
+                    try:  # our dtype duck leaks into allocations
+                        return np.asarray(v, dtype=float)
+                    except (TypeError, ValueError):
+                        return np.array(v, copy=True)
+                return np.array(v, copy=True)
+            return v
+
+        values = [_numeric(Pair._value_of(a)) for a in args]
         kwvalues = {
             k: (np.array(v, copy=True) if isinstance(v, np.ndarray) else v)
             for k, v in ((k, Pair._value_of(v)) for k, v in kwargs.items())

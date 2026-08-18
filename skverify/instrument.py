@@ -40,6 +40,7 @@ OPAQUE_CALLABLES = {
     "evaluate_all_bspl",
     "solve",
     "lstsq",
+    "_lstsq",
 }
 NEUTRAL_METHODS = {"toarray", "astype", "copy", "view"}
 CONCRETE = {"isfinite", "isnan", "isinf"}  # validation checks, not math

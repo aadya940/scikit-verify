@@ -358,6 +358,13 @@ def _concrete_check(np_fn):
     return check
 
 
+def _astype(a, dtype, copy=True, **kwargs):
+    if isinstance(a, Pair):
+        return a.astype(dtype)
+    return np.astype(a, dtype, copy=copy, **kwargs)
+
+
+FUNCTION_TABLE[np.astype] = _astype
 FUNCTION_TABLE[np.allclose] = _concrete_check(np.allclose)
 FUNCTION_TABLE[np.isclose] = _concrete_check(np.isclose)
 
