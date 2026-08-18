@@ -148,11 +148,13 @@ class TestRefusals:
         assert out.value.shape == (4, 1, 7)
         assert np.allclose(out.value, u.value[:, None])
 
-    def test_fancy_gathers_concrete_positions(self, u):
+    def test_fancy_gathers_compact(self, u):
+        # [0, 1] is affine (stride 1): one rule, u[i, j]
         out = u[[0, 1]]
-        assert out.dtype == object
-        assert out[0].formula == U[0, I]
-        assert np.allclose(out[1].value, u.value[1])
+        assert isinstance(out, Pair)
+        assert out.formula == U[I, J]
+        assert out.domain == ((0, 2), (0, 7))
+        assert np.allclose(out.value, u.value[[0, 1]])
 
     def test_bool_scalar(self, u):
         with pytest.raises(NotImplementedError):
@@ -189,11 +191,21 @@ class TestAffineFancy:
         assert r.domain == (0, 3)
         assert np.allclose(r.value, np.array([1.0, 3.0, 5.0]))
 
-    def test_irregular_gather_decompresses(self, u):
-        # [0, 1, 3] is not affine: honest per-element fallback
+    def test_irregular_gather_uses_index_table(self, u):
+        # [0, 1, 3] is not affine: one rule through a recorded table
         out = u[[0, 1, 3]]
-        assert out.dtype == object
-        assert out[2].formula == U[3, I]
+        assert isinstance(out, Pair)
+        assert "gather_" in str(out.formula)
+        assert np.allclose(out.value, u.value[[0, 1, 3]])
+        entry = out.unchecked[-1]
+        assert "[0, 1, 3]" in entry[-1][1]  # the table is disclosed
+
+    def test_permutation_gather(self):
+        v = Pair.array("v", np.array([5.0, 7.0, 6.0]))
+        perm = [2, 0, 1]
+        out = v[perm]
+        assert isinstance(out, Pair)
+        assert np.allclose(out.value, v.value[perm])
 
     def test_gather_then_arithmetic(self):
         v = Pair.array("v", np.arange(8.0))

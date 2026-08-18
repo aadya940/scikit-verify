@@ -1186,9 +1186,31 @@ class Pair:
             raise NotImplementedError("mixed fancy/slice indexing not supported")
         if len(parts) == 1:
             idx = np.asarray(parts[0])
-            if idx.ndim == 1 and idx.size >= 2:
+            if idx.ndim == 1 and 2 <= idx.size <= 4096:
                 strides = np.diff(idx)
-                if len(set(strides.tolist())) == 1:
+                if len(set(strides.tolist())) != 1:
+                    # irregular gather (pivot permutations, argsort):
+                    # ONE rule through a recorded index table,
+                    # u[[0, 1, 3]] -> u[gather_0[i]], table disclosed
+                    name = f"gather_{len(_OPAQUE)}"
+                    table = sympy.IndexedBase(name)
+                    sym = axis_idx(0)
+                    formula = self.formula.subs(sym, table[sym])
+                    _OPAQUE.append(
+                        (
+                            name,
+                            (("table", "concrete"),),
+                            (str(table[sym]), f"{name} = {idx.tolist()}"),
+                        )
+                    )
+                    value = self.value[idx]
+                    return Pair(
+                        value.copy() if isinstance(value, np.ndarray) else value,
+                        formula,
+                        ((0, int(idx.size)),) + tuple(self._axis_bounds[1:]),
+                        steps=(self,),
+                    )
+                if True:
                     # affine gather: u[[3,2,1,0]] is the remap i -> 3 - i,
                     # same machinery as strided slices, ONE indexed formula
                     d, start = int(strides[0]), int(idx[0])
