@@ -529,7 +529,7 @@ class Pair:
             vals = np.unique(x)
             if len(vals) == 1:  # uniform: zeros, ones, full
                 return sympy.sympify(vals.item())  # constant field, clean
-            if x.dtype.kind in "fiu" and 0 < x.size <= 4096:
+            if x.dtype.kind in "fiub" and x.size <= 4096:
                 # a concrete operand (filter kernels, weights): a named
                 # table, values disclosed -- same treatment as gathers
                 name = f"const_{len(_OPAQUE)}"

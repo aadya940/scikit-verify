@@ -72,15 +72,15 @@ def _bounds_of(shape):
     return tuple((0, int(s)) for s in shape)
 
 
-def _skv_zeros(shape, dtype=None, **kwargs):
+def _skv_zeros(shape, dtype=None, *args, **kwargs):
     return Pair(np.zeros(shape), sympy.Integer(0), _bounds_of(shape))
 
 
-def _skv_ones(shape, dtype=None, **kwargs):
+def _skv_ones(shape, dtype=None, *args, **kwargs):
     return Pair(np.ones(shape), sympy.Integer(1), _bounds_of(shape))
 
 
-def _skv_full(shape, fill, dtype=None, **kwargs):
+def _skv_full(shape, fill, dtype=None, *args, **kwargs):
     return Pair(
         np.full(shape, Pair._value_of(fill)),
         Pair._formula_of(fill),
@@ -89,7 +89,7 @@ def _skv_full(shape, fill, dtype=None, **kwargs):
     )
 
 
-def _skv_empty(shape, dtype=None, **kwargs):
+def _skv_empty(shape, dtype=None, *args, **kwargs):
     bounds = _bounds_of(shape)
     letters = tuple(axis_idx(ax) for ax in range(len(bounds)))
     return Pair(np.empty(shape), sympy.Function("uninitialized")(*letters), bounds)
@@ -120,6 +120,12 @@ def _skv_method(name, obj, *args, **kwargs):
         if name in ("astype", "copy"):
             return obj  # traced scalars; the cast/copy is math-neutral
     if not isinstance(obj, Pair):
+        if (
+            isinstance(obj, np.ndarray)
+            and obj.dtype == object
+            and not any(isinstance(e, Pair) for e in obj.ravel())
+        ):
+            obj = Pair._numeric(obj, copy=False)
         return getattr(obj, name)(*args, **kwargs)
     if name == "view":
         dtype = args[0] if args else kwargs.get("dtype")
@@ -335,7 +341,19 @@ def _skv_maybe(fn):
 
         entry = FUNCTION_TABLE.get(fn)
         if entry is None:
-            return fn
+            def plain_shim(*args, **kwargs):
+                if any(
+                    isinstance(a, np.ndarray)
+                    and a.dtype == object
+                    and not any(isinstance(e, Pair) for e in a.ravel())
+                    for a in args
+                ):
+                    # plain-number object arrays carry no formulas:
+                    # coercing loses nothing and numpy internals need it
+                    args = [Pair._numeric(a, copy=False) for a in args]
+                return fn(*args, **kwargs)
+
+            return plain_shim
 
         def dispatcher_shim(*args, **kwargs):
             if any(
@@ -605,7 +623,11 @@ def instrument(fn, depth=3):
     returns (fn, ()) so tracing proceeds uninstrumented."""
     try:
         if getattr(fn, "__closure__", None):
-            inner = getattr(fn, "__wrapped__", None)
+            inner = fn
+            while getattr(inner, "__wrapped__", None) is not None:
+                inner = inner.__wrapped__  # peel stacked decorators
+            if inner is fn:
+                inner = None
             if inspect.isfunction(inner) and not inner.__closure__:
                 # a wrapped function is just two functions: trace the
                 # inner one; to_sympy verifies the wrapper was neutral
@@ -685,17 +707,21 @@ def _instrument(fn, depth, seen):
             callee = fn.__globals__.get(name)
             if getattr(callee, "__name__", None) in OPAQUE_CALLABLES:
                 continue  # will be sealed at the boundary, not entered
+            _inner = callee
+            while getattr(_inner, "__wrapped__", None) is not None:
+                _inner = _inner.__wrapped__  # peel stacked decorators
             if (
                 callable(callee)
                 and getattr(callee, "__closure__", None)
-                and inspect.isfunction(getattr(callee, "__wrapped__", None))
-                and not callee.__wrapped__.__closure__
+                and _inner is not callee
+                and inspect.isfunction(_inner)
+                and not _inner.__closure__
                 and callee.__name__ not in seen
             ):
                 # decorator-wrapped callee: instrument the inner function
                 seen.add(callee.__name__)
                 try:
-                    sub, sub_sites = _instrument(callee.__wrapped__, depth - 1, seen)
+                    sub, sub_sites = _instrument(_inner, depth - 1, seen)
                 except (OSError, TypeError, SyntaxError, KeyError, AttributeError):
                     continue
                 namespace[name] = sub
