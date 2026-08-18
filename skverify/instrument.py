@@ -22,9 +22,25 @@ from .helpers import axis_idx
 from .pair import Pair, _loop_end, _loop_iter
 
 ALLOC = {"zeros", "empty", "ones", "full"}
-NEUTRAL = {"asarray", "asanyarray", "ascontiguousarray", "asfortranarray"}
-OPAQUE_CALLABLES = {"solve_banded", "solveh_banded", "cho_solve", "design_matrix"}
+NEUTRAL = {
+    "asarray",
+    "asanyarray",
+    "ascontiguousarray",
+    "asfortranarray",
+    "asarray_chkfinite",
+}
+OPAQUE_CALLABLES = {
+    "solve_banded",
+    "solveh_banded",
+    "cho_solve",
+    "design_matrix",
+    "gbsv",
+}
 NEUTRAL_METHODS = {"toarray", "astype", "copy"}
+CONCRETE = {"isfinite", "isnan", "isinf"}  # validation checks, not math
+# compiled routines that RETURN through an array out-parameter (scipy's
+# Cython convention); value = argument position of the out array
+OPAQUE_OUT = {"_coloc": 3}
 
 _SITES = []
 
@@ -66,6 +82,13 @@ def _skv_neutral(a, dtype=None, **kwargs):
 
 
 def _skv_method(name, obj, *args, **kwargs):
+    if (
+        isinstance(obj, np.ndarray)
+        and obj.dtype == object
+        and all(isinstance(e, Pair) for e in obj.ravel())
+    ):
+        if name in ("astype", "copy"):
+            return obj  # traced scalars; the cast/copy is math-neutral
     if not isinstance(obj, Pair):
         return getattr(obj, name)(*args, **kwargs)
     if name == "astype":
@@ -86,9 +109,65 @@ def _skv_method(name, obj, *args, **kwargs):
     return getattr(obj.value, name)(*args, **kwargs)
 
 
+def _skv_concrete(name, a, *args, **kwargs):
+    return getattr(np, name)(np.asarray(Pair._value_of(a)), *args, **kwargs)
+
+
+def _skv_opaque_out(fn, out_idx, transposed, *args, **kwargs):
+    """Run an out-parameter Cython routine on the concrete lane and
+    return the filled buffer as a fresh opaque atom (the traced twin
+    of `fn(..., out, ...)` rewritten to `out = ...`)."""
+    from .pair import _OPAQUE
+    from .contracts import check_call
+
+    values = [Pair._value_of(a) for a in args]
+    out_val = np.asarray(values[out_idx], dtype=float)
+    if transposed:
+        passed = np.ascontiguousarray(out_val.T)
+        values[out_idx] = passed
+        fn(*values, **kwargs)
+        buf = passed.T.copy()
+    else:
+        buf = np.ascontiguousarray(out_val)
+        values[out_idx] = buf
+        fn(*values, **kwargs)
+    name = fn.__name__.lstrip("_")
+    base = sympy.IndexedBase(f"{name}_{len(_OPAQUE)}")
+    letters = tuple(axis_idx(ax) for ax in range(buf.ndim))
+    formula = base[letters] if letters else sympy.Symbol(name)
+    operands = []
+    for i, a in enumerate(args):
+        if i == out_idx:
+            continue
+        if isinstance(a, Pair):
+            operands.append(a.formula)
+        elif np.isscalar(a):
+            operands.append(sympy.sympify(a))
+        else:
+            operands.append(sympy.Symbol(f"const{i}"))
+    call = sympy.Function(name)(*operands)
+    _OPAQUE.append(
+        check_call(name, values, buf) + ((str(formula), str(call)),)
+    )
+    return Pair(
+        buf,
+        formula,
+        tuple((0, int(s)) for s in buf.shape),
+        steps=Pair._steps_of(*args),
+    )
+
+
+def _traced(a):
+    return isinstance(a, Pair) or (
+        isinstance(a, np.ndarray)
+        and a.dtype == object
+        and any(isinstance(e, Pair) for e in a.ravel())
+    )
+
+
 def _skv_opaque(fn):
     def wrapper(*args, **kwargs):
-        if any(isinstance(a, Pair) for a in args):
+        if any(_traced(a) for a in args):
             return Pair._opaque_call(fn, args, kwargs)
         return fn(*args, **kwargs)
 
@@ -123,6 +202,46 @@ class _Rewriter(ast.NodeTransformer):
         self.sites.append(f"loop {loop_id} tagged")
         return [node, end]
 
+    def visit_Expr(self, node):
+        # `fn(x, t, k, ab.T, n)` filling ab in place -> `ab = twin(...)`:
+        # out-parameter Cython calls become assignments of opaque atoms
+        call = node.value if isinstance(node.value, ast.Call) else None
+        name = self._target_name(call.func) if call else None
+        if name in OPAQUE_OUT and not call.keywords:
+            idx = OPAQUE_OUT[name]
+            if idx < len(call.args):
+                arg = call.args[idx]
+                transposed = (
+                    isinstance(arg, ast.Attribute)
+                    and arg.attr == "T"
+                    and isinstance(arg.value, ast.Name)
+                )
+                target = (
+                    arg.value
+                    if transposed
+                    else arg if isinstance(arg, ast.Name) else None
+                )
+                if target is not None:
+                    self.generic_visit(node)
+                    args = list(call.args)
+                    args[idx] = ast.Name(id=target.id, ctx=ast.Load())
+                    self.sites.append(f"{name} -> opaque out-parameter call")
+                    return ast.Assign(
+                        targets=[ast.Name(id=target.id, ctx=ast.Store())],
+                        value=ast.Call(
+                            func=ast.Name(id="__skv_opaque_out__", ctx=ast.Load()),
+                            args=[
+                                call.func,
+                                ast.Constant(value=idx),
+                                ast.Constant(value=transposed),
+                            ]
+                            + args,
+                            keywords=[],
+                        ),
+                    )
+        self.generic_visit(node)
+        return node
+
     def visit_For(self, node):
         return self._tag_loop(node)
 
@@ -138,6 +257,13 @@ class _Rewriter(ast.NodeTransformer):
 
     def visit_Call(self, node):
         self.generic_visit(node)
+        # a neutral function passed by REFERENCE (map(np.asarray_chkfinite,
+        # ...)) must be swapped too, or Pairs decompress inside it
+        for pos, arg in enumerate(node.args):
+            ref = self._target_name(arg)
+            if ref in NEUTRAL and isinstance(arg, (ast.Attribute, ast.Name)):
+                self.sites.append(f"{ref} (reference) -> pair-preserving")
+                node.args[pos] = ast.Name(id="__skv_neutral__", ctx=ast.Load())
         name = self._target_name(node.func)
         if name in ALLOC:
             self.sites.append(f"{name} -> traced allocation")
@@ -145,6 +271,13 @@ class _Rewriter(ast.NodeTransformer):
         elif name in NEUTRAL:
             self.sites.append(f"{name} -> pair-preserving")
             node.func = ast.Name(id="__skv_neutral__", ctx=ast.Load())
+        elif name in CONCRETE:
+            self.sites.append(f"{name} -> concrete-lane check")
+            node = ast.Call(
+                func=ast.Name(id="__skv_concrete__", ctx=ast.Load()),
+                args=[ast.Constant(value=name)] + node.args,
+                keywords=node.keywords,
+            )
         elif name in OPAQUE_CALLABLES:
             self.sites.append(f"{name} -> opaque contract call")
             node.func = ast.Call(
@@ -223,6 +356,8 @@ def _instrument(fn, depth, seen):
     namespace["__skv_neutral__"] = _skv_neutral
     namespace["__skv_opaque__"] = _skv_opaque
     namespace["__skv_method__"] = _skv_method
+    namespace["__skv_concrete__"] = _skv_concrete
+    namespace["__skv_opaque_out__"] = _skv_opaque_out
     namespace["__skv_loop_iter__"] = _loop_iter
     namespace["__skv_loop_end__"] = _loop_end
 

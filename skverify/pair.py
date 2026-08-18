@@ -821,11 +821,29 @@ class Pair:
             shape = (int(shape),)
         shape = tuple(int(n) for n in shape)
         current = tuple(hi - lo for lo, hi in (self._axis_bounds or ()))
-        target = tuple(
-            current and int(np.prod(current)) if n == -1 else n for n in shape
-        )
+        target = np.reshape(np.empty(current), shape).shape  # resolves -1
         if target == current:
             return self
+        if tuple(n for n in target if n != 1) == tuple(
+            n for n in current if n != 1
+        ):
+            # only extent-1 axes inserted/removed: layout preserved.
+            # y (n,) -> (n, 1): old letters move to the surviving axes,
+            # dropped extent-1 axes pin to index 0
+            survivors = iter(
+                ax for ax, n in enumerate(target) if n != 1
+            )
+            index_map = {}
+            for old_ax, n in enumerate(current):
+                if n == 1:
+                    index_map[axis_idx(old_ax)] = sympy.Integer(0)
+                else:
+                    index_map[axis_idx(old_ax)] = axis_idx(next(survivors))
+            return self._remap(
+                value=self.value.reshape(shape).copy(),
+                index_map=index_map,
+                axis_bounds=tuple((0, n) for n in target),
+            )
         raise NotImplementedError(
             "reshape that changes the layout is not supported yet"
         )
@@ -953,6 +971,14 @@ class Pair:
     @property
     def shape(self):
         return np.shape(self.value)
+
+    @property
+    def size(self):
+        return int(np.size(self.value))
+
+    @property
+    def flags(self):
+        return np.asarray(self.value).flags
 
     @property
     def dtype(self):
@@ -1112,7 +1138,13 @@ class Pair:
             for a in pair_args
             if isinstance(a.value, np.ndarray)
         ]
-        values = [Pair._value_of(a) for a in args]
+        # the routine gets COPIES: overwrite_ab-style scribbling stays
+        # off the traced values, and the snapshot guard keeps everyone
+        # honest about it
+        values = [
+            np.array(v, copy=True) if isinstance(v, np.ndarray) else v
+            for v in (Pair._value_of(a) for a in args)
+        ]
         result = func(*values, **kwargs)
         after = [
             np.asarray(a.value).tobytes()
@@ -1135,6 +1167,32 @@ class Pair:
                 formulas.append(sympy.Symbol(f"const{n_const}"))
                 n_const += 1
         call = sympy.Function(func.__name__)(*formulas)
+        if isinstance(result, tuple):
+            # multi-output routine (LAPACK gbsv: lu, piv, x, info): each
+            # float-array output becomes its own atom; integer bookkeeping
+            # (pivots, status) passes through concrete
+            outs = []
+            for pos, res in enumerate(result):
+                if isinstance(res, np.ndarray) and res.dtype.kind in "fc":
+                    base = sympy.IndexedBase(
+                        f"{func.__name__}_{len(_OPAQUE)}_{pos}"
+                    )
+                    letters = tuple(axis_idx(ax) for ax in range(res.ndim))
+                    outs.append(
+                        Pair(
+                            res,
+                            base[letters],
+                            tuple((0, int(n)) for n in res.shape),
+                            steps=Pair._steps_of(*args),
+                        )
+                    )
+                else:
+                    outs.append(res)
+            _OPAQUE.append(
+                check_call(func.__name__, values, result)
+                + ((f"{func.__name__}_{len(_OPAQUE)}_*", str(call)),)
+            )
+            return tuple(outs)
         shape = np.shape(result) if hasattr(result, "shape") else ()
         if shape:
             # array output: a fresh indexed symbol, so downstream slicing

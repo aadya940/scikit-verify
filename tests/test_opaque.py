@@ -95,12 +95,14 @@ class TestContractChecks:
         name, verdicts = check_call("solve", (A0, b0), wrong)
         assert dict(verdicts)["residual"] == "failed"
 
-    def test_mutation_guard_fires(self):
+    def test_mutating_routine_cannot_touch_traced_input(self):
+        # opaque calls run on COPIES: overwrite_*-style scribbling
+        # (LAPACK gbsv) is allowed and the traced value stays intact
         u = Pair.array("u", np.arange(4.0))
 
         def mutator(x):
             x[0] = -1.0
             return np.array([0.0])
 
-        with pytest.raises(NotImplementedError):
-            Pair._opaque_call(mutator, (u,), {})
+        Pair._opaque_call(mutator, (u,), {})
+        assert u.value[0] == 0.0
