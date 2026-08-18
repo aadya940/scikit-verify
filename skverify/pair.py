@@ -1070,6 +1070,12 @@ class Pair:
     def flags(self):
         return np.asarray(self.value).flags
 
+    def astype(self, dtype=None, copy=True, **kwargs):
+        # float cast is math-neutral; a real reinterpretation would lie
+        if dtype is not None and np.dtype(dtype).kind not in "fc":
+            raise NotImplementedError("astype to non-float would change the math")
+        return Pair(self.value, self.formula, self._axis_bounds, steps=(self,))
+
     @property
     def device(self):
         # array-API bookkeeping; the concrete lane lives wherever numpy is

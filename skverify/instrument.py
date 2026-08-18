@@ -38,6 +38,8 @@ OPAQUE_CALLABLES = {
     "data_matrix",
     "fpback",
     "evaluate_all_bspl",
+    "solve",
+    "lstsq",
 }
 NEUTRAL_METHODS = {"toarray", "astype", "copy", "view"}
 CONCRETE = {"isfinite", "isnan", "isinf"}  # validation checks, not math
@@ -208,7 +210,11 @@ def _skv_opaque_out(fn, out_idxs, transposed, *args, **kwargs):
 def _skv_maybe(fn):
     """Pass Python functions, methods, classes, ufuncs and builtins
     through; wrap anything COMPILED so traced arguments turn the call
-    into an opaque atom instead of a crash."""
+    into an opaque atom instead of a crash. Curated boundaries match
+    the RESOLVED callable's name, so aliases and attribute lookups
+    cannot dodge them."""
+    if getattr(fn, "__name__", None) in OPAQUE_CALLABLES:
+        return _skv_opaque(fn)
     if (
         inspect.isfunction(fn)
         or inspect.ismethod(fn)
@@ -508,6 +514,8 @@ def _instrument(fn, depth, seen):
     if depth > 0:
         for name in rewriter.callees:
             callee = fn.__globals__.get(name)
+            if getattr(callee, "__name__", None) in OPAQUE_CALLABLES:
+                continue  # will be sealed at the boundary, not entered
             if (
                 callable(callee)
                 and getattr(callee, "__closure__", None)
