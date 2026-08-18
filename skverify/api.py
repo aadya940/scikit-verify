@@ -46,6 +46,21 @@ def to_sympy(fn, *args):
         _LOOP_EVENTS.clear()
         _LOOP_STACK.clear()
         out = _repack(fn_run(*wrapped))
+        if any("decorator unwrapped" in site for site in sites):
+            # names propose, runs dispose: the wrapper must have been
+            # neutral FOR THIS CALL -- rerun the real function on the
+            # concrete inputs and compare
+            reference = fn(*args)
+            traced_value = Pair._value_of(out) if isinstance(out, Pair) else None
+            if traced_value is not None and not np.allclose(
+                np.asarray(traced_value, dtype=float),
+                np.asarray(reference, dtype=float),
+                equal_nan=True,
+            ):
+                raise NotImplementedError(
+                    "a decorator was unwrapped but changed this call's "
+                    "result; the wrapper is not math-neutral here"
+                )
     try:
         # every branch taken during the trace, as one hypothesis: the
         # formula holds for inputs satisfying these preconditions.
@@ -79,7 +94,9 @@ def _repack(out):
             folded = _fold_poly(out.formula)
             if folded is None and isinstance(out.formula, sympy.Add):
                 folded = _fold_add(out.formula)
-            if folded is None:
+            if folded is None and sympy.count_ops(out.formula) < 2000:
+                # expand is multinomial: a 4th power of a 50-term sum
+                # would be millions of terms. Big formulas stay factored
                 expanded = sympy.expand(out.formula)
                 if isinstance(expanded, sympy.Add):
                     folded = _fold_add(expanded)

@@ -514,9 +514,13 @@ class Pair:
             if x.dtype == object:
                 elems = x.ravel()
                 if all(isinstance(e, Pair) for e in elems):
+                    formulas = [e.formula for e in elems]
+                    if len(set(formulas)) == 1:
+                        # keepdims mean and friends: one scalar in a box
+                        return formulas[0]
                     from .api import _recompress
 
-                    rule = _recompress([e.formula for e in elems])
+                    rule = _recompress(formulas)
                     if rule is not None:
                         return rule
                     raise NotImplementedError(
@@ -1049,6 +1053,11 @@ class Pair:
         return np.asarray(self.value).flags
 
     @property
+    def device(self):
+        # array-API bookkeeping; the concrete lane lives wherever numpy is
+        return getattr(np.asarray(self.value), "device", "cpu")
+
+    @property
     def dtype(self):
         # object, deliberately: numpy cast branches like ret.dtype.type(x)
         # become passthroughs instead of float(Pair) deaths. The concrete
@@ -1117,6 +1126,8 @@ class Pair:
 
     def __getitem__(self, key):
         """Slicing and integer indexing; 1-D is just the N=1 case."""
+        if isinstance(key, tuple) and key == ():
+            return self  # numpy's 0-d unwrap idiom, vals[()]
         if self._axis_bounds is None:
             raise TypeError("scalar Pair is not subscriptable")
         parts = key if isinstance(key, tuple) else (key,)
@@ -1156,6 +1167,30 @@ class Pair:
     def __array_ufunc__(self, ufunc, method, *inputs, out=None, **kwargs):
         if out is not None:
             raise NotImplementedError("out= is not supported (mutation)")
+        if method == "reduce" and ufunc in (np.maximum, np.minimum, np.add):
+            a = inputs[0]
+            axis = kwargs.get("axis", 0)
+            if (
+                isinstance(a, Pair)
+                and a._axis_bounds is not None
+                and len(a._axis_bounds) == 1
+                and axis in (0, None)
+            ):
+                if ufunc is np.add:
+                    from .maps.numpy import _sum
+
+                    return _sum(a)
+                lo, hi = a._axis_bounds[0]
+                if hi - lo <= 4096:
+                    sym = axis_idx(0)
+                    op = sympy.Max if ufunc is np.maximum else sympy.Min
+                    formula = op(
+                        *[a.formula.subs(sym, k) for k in range(lo, hi)],
+                        evaluate=False,  # canonical sorting of n large args is quadratic
+                    )
+                    return Pair(
+                        ufunc.reduce(a.value), formula, None, steps=(a,)
+                    )
         if method != "__call__" or kwargs.get("out") is not None:
             raise NotImplementedError(f"{ufunc.__name__}.{method} not supported")
 
