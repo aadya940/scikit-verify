@@ -1049,6 +1049,13 @@ class Pair:
         """Slicing and integer indexing; 1-D is just the N=1 case."""
         if self._axis_bounds is None:
             raise TypeError("scalar Pair is not subscriptable")
+        parts = key if isinstance(key, tuple) else (key,)
+        if any(k is None for k in parts):
+            # w[:, None]: newaxis only inserts extent-1 axes -- apply the
+            # rest of the key, then reshape to numpy's resulting shape
+            rest = tuple(k for k in parts if k is not None)
+            base = self[rest] if rest else self
+            return base.reshape(np.shape(self.value[key]))
         gathered = self._fancy_gather(key)
         if gathered is not None:
             return gathered

@@ -35,12 +35,14 @@ OPAQUE_CALLABLES = {
     "cho_solve",
     "design_matrix",
     "gbsv",
+    "data_matrix",
+    "fpback",
 }
-NEUTRAL_METHODS = {"toarray", "astype", "copy"}
+NEUTRAL_METHODS = {"toarray", "astype", "copy", "view"}
 CONCRETE = {"isfinite", "isnan", "isinf"}  # validation checks, not math
-# compiled routines that RETURN through an array out-parameter (scipy's
-# Cython convention); value = argument position of the out array
-OPAQUE_OUT = {"_coloc": 3}
+# compiled routines that RETURN through array out-parameters (scipy's
+# Cython convention); value = argument positions of the out arrays
+OPAQUE_OUT = {"_coloc": (3,), "qr_reduce": (0, 3)}
 
 _SITES = []
 
@@ -91,6 +93,11 @@ def _skv_method(name, obj, *args, **kwargs):
             return obj  # traced scalars; the cast/copy is math-neutral
     if not isinstance(obj, Pair):
         return getattr(obj, name)(*args, **kwargs)
+    if name == "view":
+        dtype = args[0] if args else kwargs.get("dtype")
+        if dtype is not None and np.dtype(dtype).kind not in "f":
+            raise NotImplementedError("view reinterpretation would change the math")
+        return Pair(obj.value, obj.formula, obj._axis_bounds, steps=(obj,))
     if name == "astype":
         dtype = args[0] if args else kwargs.get("dtype")
         if dtype is not None and np.dtype(dtype).kind not in "fc":
@@ -113,31 +120,27 @@ def _skv_concrete(name, a, *args, **kwargs):
     return getattr(np, name)(np.asarray(Pair._value_of(a)), *args, **kwargs)
 
 
-def _skv_opaque_out(fn, out_idx, transposed, *args, **kwargs):
+def _skv_opaque_out(fn, out_idxs, transposed, *args, **kwargs):
     """Run an out-parameter Cython routine on the concrete lane and
-    return the filled buffer as a fresh opaque atom (the traced twin
-    of `fn(..., out, ...)` rewritten to `out = ...`)."""
+    return the filled buffers as fresh opaque atoms (the traced twin
+    of `fn(a, out1, out2)` rewritten to `out1, out2 = ...`)."""
     from .pair import _OPAQUE
     from .contracts import check_call
 
     values = [Pair._value_of(a) for a in args]
-    out_val = np.asarray(values[out_idx], dtype=float)
-    if transposed:
-        passed = np.ascontiguousarray(out_val.T)
-        values[out_idx] = passed
-        fn(*values, **kwargs)
-        buf = passed.T.copy()
-    else:
-        buf = np.ascontiguousarray(out_val)
-        values[out_idx] = buf
-        fn(*values, **kwargs)
+    for pos, idx in enumerate(out_idxs):
+        out_val = np.asarray(values[idx], dtype=float)
+        values[idx] = np.ascontiguousarray(out_val.T if transposed[pos] else out_val)
+    fn(*values, **kwargs)
+    bufs = {
+        idx: (values[idx].T.copy() if transposed[pos] else values[idx])
+        for pos, idx in enumerate(out_idxs)
+    }
+
     name = fn.__name__.lstrip("_")
-    base = sympy.IndexedBase(f"{name}_{len(_OPAQUE)}")
-    letters = tuple(axis_idx(ax) for ax in range(buf.ndim))
-    formula = base[letters] if letters else sympy.Symbol(name)
     operands = []
     for i, a in enumerate(args):
-        if i == out_idx:
+        if i in bufs:
             continue
         if isinstance(a, Pair):
             operands.append(a.formula)
@@ -146,15 +149,28 @@ def _skv_opaque_out(fn, out_idx, transposed, *args, **kwargs):
         else:
             operands.append(sympy.Symbol(f"const{i}"))
     call = sympy.Function(name)(*operands)
+
+    record = len(_OPAQUE)
+    outs = []
+    for pos, idx in enumerate(out_idxs):
+        buf = bufs[idx]
+        suffix = f"_{pos}" if len(out_idxs) > 1 else ""
+        base = sympy.IndexedBase(f"{name}_{record}{suffix}")
+        letters = tuple(axis_idx(ax) for ax in range(buf.ndim))
+        formula = base[letters] if letters else sympy.Symbol(f"{name}_{record}")
+        outs.append(
+            Pair(
+                buf,
+                formula,
+                tuple((0, int(n)) for n in buf.shape),
+                steps=Pair._steps_of(*args),
+            )
+        )
     _OPAQUE.append(
-        check_call(name, values, buf) + ((str(formula), str(call)),)
+        check_call(name, values, tuple(bufs.values()))
+        + ((f"{name}_{record}", str(call)),)
     )
-    return Pair(
-        buf,
-        formula,
-        tuple((0, int(s)) for s in buf.shape),
-        steps=Pair._steps_of(*args),
-    )
+    return outs[0] if len(outs) == 1 else tuple(outs)
 
 
 def _traced(a):
@@ -203,42 +219,57 @@ class _Rewriter(ast.NodeTransformer):
         return [node, end]
 
     def visit_Expr(self, node):
-        # `fn(x, t, k, ab.T, n)` filling ab in place -> `ab = twin(...)`:
-        # out-parameter Cython calls become assignments of opaque atoms
+        # `fn(x, t, k, ab.T, n)` filling ab in place -> `ab = twin(...)`;
+        # multiple out-params become tuple assignments. Out-parameter
+        # Cython calls turn into assignments of opaque atoms
         call = node.value if isinstance(node.value, ast.Call) else None
         name = self._target_name(call.func) if call else None
         if name in OPAQUE_OUT and not call.keywords:
-            idx = OPAQUE_OUT[name]
-            if idx < len(call.args):
-                arg = call.args[idx]
-                transposed = (
-                    isinstance(arg, ast.Attribute)
-                    and arg.attr == "T"
-                    and isinstance(arg.value, ast.Name)
-                )
-                target = (
-                    arg.value
-                    if transposed
-                    else arg if isinstance(arg, ast.Name) else None
-                )
-                if target is not None:
-                    self.generic_visit(node)
-                    args = list(call.args)
-                    args[idx] = ast.Name(id=target.id, ctx=ast.Load())
-                    self.sites.append(f"{name} -> opaque out-parameter call")
-                    return ast.Assign(
-                        targets=[ast.Name(id=target.id, ctx=ast.Store())],
-                        value=ast.Call(
-                            func=ast.Name(id="__skv_opaque_out__", ctx=ast.Load()),
-                            args=[
-                                call.func,
-                                ast.Constant(value=idx),
-                                ast.Constant(value=transposed),
-                            ]
-                            + args,
-                            keywords=[],
-                        ),
+            idxs = OPAQUE_OUT[name]
+            targets, flags, ok = [], [], max(idxs) < len(call.args)
+            if ok:
+                for idx in idxs:
+                    arg = call.args[idx]
+                    transposed = (
+                        isinstance(arg, ast.Attribute)
+                        and arg.attr == "T"
+                        and isinstance(arg.value, ast.Name)
                     )
+                    base = (
+                        arg.value
+                        if transposed
+                        else arg if isinstance(arg, ast.Name) else None
+                    )
+                    if base is None:
+                        ok = False
+                        break
+                    targets.append(base.id)
+                    flags.append(transposed)
+            if ok:
+                self.generic_visit(node)
+                args = list(call.args)
+                for idx, tid in zip(idxs, targets):
+                    args[idx] = ast.Name(id=tid, ctx=ast.Load())
+                self.sites.append(f"{name} -> opaque out-parameter call")
+                names = [ast.Name(id=t, ctx=ast.Store()) for t in targets]
+                target = (
+                    names[0]
+                    if len(names) == 1
+                    else ast.Tuple(elts=names, ctx=ast.Store())
+                )
+                return ast.Assign(
+                    targets=[target],
+                    value=ast.Call(
+                        func=ast.Name(id="__skv_opaque_out__", ctx=ast.Load()),
+                        args=[
+                            call.func,
+                            ast.Constant(value=tuple(idxs)),
+                            ast.Constant(value=tuple(flags)),
+                        ]
+                        + args,
+                        keywords=[],
+                    ),
+                )
         self.generic_visit(node)
         return node
 

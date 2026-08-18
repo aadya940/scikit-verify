@@ -142,9 +142,11 @@ class TestRefusals:
         assert r.domain == ((0, 2), (0, 7))
         assert np.allclose(r.value, u.value[::2, :])
 
-    def test_newaxis(self, u):
-        with pytest.raises(NotImplementedError):
-            u[:, None]
+    def test_newaxis_inserts_extent_1_axis(self, u):
+        # u (4x7): u[:, None] -> (4, 1, 7); letters follow the survivors
+        out = u[:, None]
+        assert out.value.shape == (4, 1, 7)
+        assert np.allclose(out.value, u.value[:, None])
 
     def test_fancy_gathers_concrete_positions(self, u):
         out = u[[0, 1]]
