@@ -76,18 +76,47 @@ def _generalize(e1, e2, k):
 _STEP = sympy.IndexedBase("step")
 
 
-def _delta_steps(steps):
+def _delta_steps(steps, nodes=None):
     """Steps with earlier steps' formulas abstracted to step[m]
     references, at any distance. Cross-iteration references then
     generalize as linear index expressions (step[9*n + 37]) instead of
-    breaking the fold. One xreplace traversal per step."""
+    breaking the fold.
+
+    sympy flattens Add/Mul, so an accumulator's previous value is not
+    an exact subtree of the next (u0*u1*u2 does not contain u0*u1).
+    With nodes given, the DAG's parents guide a multiset factoring:
+    the parent's args are removed and replaced by its step reference."""
+    index = {id(n): m for m, n in enumerate(nodes)} if nodes else {}
     mapping = {}
     deltas = []
     for m, expr in enumerate(steps):
+        original = expr
+        if (
+            nodes is not None
+            and expr not in mapping
+            and isinstance(expr, (sympy.Add, sympy.Mul))
+        ):
+            for parent in nodes[m]._parents:
+                pi = index.get(id(parent))
+                if pi is None or pi >= m:
+                    continue
+                f = steps[pi]
+                if f.is_Atom or f == expr:
+                    continue
+                args = list(expr.args)
+                if f.func is expr.func:
+                    fargs = list(f.args)
+                    if all(fargs.count(a) <= args.count(a) for a in set(fargs)):
+                        for a in fargs:
+                            args.remove(a)
+                        expr = expr.func(_STEP[pi], *args)
+                        continue
+                if f in args:
+                    args[args.index(f)] = _STEP[pi]
+                    expr = expr.func(*args)
         if mapping:
             expr = expr.xreplace(mapping)
         deltas.append(expr)
-        original = steps[m]
         if not original.is_Atom and original not in mapping:
             mapping[original] = _STEP[m]
     return deltas
@@ -158,16 +187,72 @@ def _group_tree(entries, depth):
     return items
 
 
-# item model for hierarchical folding: (layout, exprs, span).
+# item model for hierarchical folding: (layout, exprs, span, positions).
 # layout is a tuple of ("text", indent, str) and ("expr", indent) slots;
 # exprs fill the expr slots in order; span counts the original units
-# (steps or iterations) the item covers. Two items fold together only
-# when their layouts are IDENTICAL and their exprs generalize -- so a
-# fold can never merge structurally different regions.
+# (steps or iterations) the item covers; positions holds each expr's
+# absolute delta index (used to detect accumulator self-references).
+# Two items fold together only when their layouts are IDENTICAL and
+# their exprs generalize -- a fold can never merge structurally
+# different regions.
+
+
+_CLOSED_DUMMY = sympy.Dummy("j", integer=True)
+
+
+def _self_reference(expr, k, base_pos, stride):
+    """The step-reference in expr pointing at THIS slot one iteration
+    back (position stride*k + base_pos - stride), or None."""
+    target = stride * k + base_pos - stride
+    for ref in expr.atoms(sympy.Indexed):
+        if ref.base == _STEP and sympy.expand(ref.indices[0] - target) == 0:
+            return ref
+    return None
+
+
+def _close_form(template, k, selfref, members, stride, base_pos):
+    """A verified closed form for an accumulator template.
+
+    acc + g(k) -> init + Sum(g, ...);  acc * g(k) -> init * Product;
+    a(k)*acc + b(k) -> rsolve when sympy can. Verified by exact doit
+    equality against the unrolled chain for EVERY member; None when
+    the pattern or the proof fails. Function-agnostic: only the
+    template's structure is inspected."""
+    init = members[0]
+    j = _CLOSED_DUMMY  # shared: closed forms must compare equal across folds
+    closed = None
+    if isinstance(template, sympy.Add) and selfref in template.args:
+        g = (template - selfref).xreplace({k: j})
+        closed = init + sympy.Sum(g, (j, 1, k))
+    elif isinstance(template, sympy.Mul) and selfref in template.args:
+        g = (template / selfref).xreplace({k: j})
+        closed = init * sympy.Product(g, (j, 1, k))
+    else:
+        a = template.coeff(selfref)
+        b = sympy.expand(template - a * selfref)
+        if a != 0 and not a.has(selfref, _STEP) and not b.has(selfref):
+            y = sympy.Function("y")
+            try:
+                closed = sympy.rsolve(
+                    y(k) - a * y(k - 1) - b, y(k), {y(0): init}
+                )
+            except (ValueError, NotImplementedError):
+                closed = None
+    if closed is None:
+        return None
+    expected = init
+    for r in range(1, len(members)):
+        prev_ref = _STEP[stride * r + base_pos - stride]
+        expected = members[r].xreplace({prev_ref: expected})
+        got = closed.subs(k, r).doit()
+        if sympy.expand(got - expected) != 0:
+            return None
+    return closed
 
 
 def _fold_seq(items, k, min_run=3, unit="items"):
-    """Fold runs of consecutive items instantiating one template."""
+    """Fold runs of consecutive items instantiating one template;
+    accumulator slots in a fold get verified closed forms."""
     out, r, total = [], 0, len(items)
     while r < total:
         lay = items[r][0]
@@ -191,11 +276,41 @@ def _fold_seq(items, k, min_run=3, unit="items"):
             ):
                 run += 1
         if cand is not None and run >= min_run:
+            pos0 = items[r][3]
+            strides = [b - a for a, b in zip(pos0, items[r + 1][3])]
+            aligned = all(
+                items[r + q][3][j] == pos0[j] + q * strides[j]
+                for q in range(run)
+                for j in range(len(pos0))
+            )
+            exprs = list(cand)
+            if aligned and run <= 200:
+                for j, t in enumerate(cand):
+                    ref = _self_reference(t, k, pos0[j], strides[j])
+                    if ref is None:
+                        continue
+                    closed = _close_form(
+                        t,
+                        k,
+                        ref,
+                        [items[r + q][1][j] for q in range(run)],
+                        strides[j],
+                        pos0[j],
+                    )
+                    if closed is not None:
+                        exprs[j] = closed
             header = ("text", 0, f"repeat {run} {unit}, {k} = 0..{run - 1}:")
             layout = (header,) + tuple(
                 (slot[0], slot[1] + 1) + tuple(slot[2:]) for slot in lay
             )
-            out.append((layout, cand, sum(items[r + j][2] for j in range(run))))
+            out.append(
+                (
+                    layout,
+                    exprs,
+                    sum(items[r + q][2] for q in range(run)),
+                    pos0,
+                )
+            )
             r += run
             continue
         out.append(items[r])
@@ -204,12 +319,13 @@ def _fold_seq(items, k, min_run=3, unit="items"):
 
 
 def _merge_items(items, indent=0):
-    """Concatenate items into one (layout, exprs) pair."""
-    layout, exprs = [], []
-    for lay, ex, _ in items:
+    """Concatenate items into one (layout, exprs, positions) triple."""
+    layout, exprs, positions = [], [], []
+    for lay, ex, _, pos in items:
         layout.extend((slot[0], slot[1] + indent) + tuple(slot[2:]) for slot in lay)
         exprs.extend(ex)
-    return tuple(layout), exprs
+        positions.extend(pos)
+    return tuple(layout), exprs, positions
 
 
 def _items_of(tree, deltas, ks, depth):
@@ -220,19 +336,19 @@ def _items_of(tree, deltas, ks, depth):
     items = []
     for it in tree:
         if it[0] == "step":
-            items.append(((("expr", 0),), [deltas[it[1]]], 1))
+            items.append(((("expr", 0),), [deltas[it[1]]], 1, [it[1]]))
             continue
         _, lid, iters = it
         iter_items = []
         for group in iters:
             sub = _items_of(group, deltas, ks, depth + 1)
             sub = _fold_seq(sub, ks[depth + 1], unit="items")
-            lay, ex = _merge_items(sub)
-            iter_items.append((lay, ex, 1))
+            lay, ex, pos = _merge_items(sub)
+            iter_items.append((lay, ex, 1, pos))
         folded = _fold_seq(iter_items, ks[depth], unit="iterations")
-        layout, exprs = [], []
+        layout, exprs, positions = [], [], []
         r = 0
-        for lay, ex, span in folded:
+        for lay, ex, span, pos in folded:
             title = (
                 f"loop {lid}, iteration {r}:"
                 if span == 1
@@ -241,8 +357,9 @@ def _items_of(tree, deltas, ks, depth):
             layout.append(("text", 0, title))
             layout.extend((slot[0], slot[1] + 1) + tuple(slot[2:]) for slot in lay)
             exprs.extend(ex)
+            positions.extend(pos)
             r += span
-        items.append((tuple(layout), exprs, 1))
+        items.append((tuple(layout), exprs, 1, positions))
     return items
 
 
@@ -323,7 +440,7 @@ class Pair:
             nodes = sorted(nodes, key=lambda n: n._seq)
             contexts = [_context_of(n._seq) for n in nodes]
             if any(contexts):
-                deltas = _delta_steps([n.formula for n in nodes])
+                deltas = _delta_steps([n.formula for n in nodes], nodes)
                 return self._derivation_by_loops(deltas, contexts)
         deltas = _delta_steps([n.formula for n in nodes])
         k = _fresh_name("n", deltas)
@@ -367,7 +484,7 @@ class Pair:
         tree = _group_tree(list(zip(contexts, range(len(deltas)))), 0)
         items = _items_of(tree, deltas, ks, 0)
         items = _fold_seq(items, ks[0], unit="items")
-        layout, exprs = _merge_items(items)
+        layout, exprs, _ = _merge_items(items)
 
         assignments, reduced = sympy.cse(
             exprs, symbols=sympy.numbered_symbols("t"), order="none"

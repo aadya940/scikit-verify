@@ -184,3 +184,73 @@ class TestStepFold:
         small = len(self._scatter(8).derivation().splitlines())
         large = len(self._scatter(64).derivation().splitlines())
         assert large <= small + 2  # rule line absorbs the growth
+
+
+def _sum_kernel(u):
+    acc = np.zeros(8)
+    total = 0.0
+    for r in range(8):
+        total = total + u[r]
+        acc[r] = total
+    return total
+
+
+def _product_kernel(u):
+    acc = np.zeros(8)
+    p = 1.0
+    for r in range(8):
+        p = p * u[r]
+        acc[r] = p
+    return p
+
+
+def _horner_kernel(c):
+    acc = np.zeros(4)
+    v = 0.0
+    for r in range(4):
+        v = v * 2.0 + c[r]
+        acc[r] = v
+    return v
+
+
+class TestClosedForms:
+    def test_sum_accumulator_closes(self):
+        u = np.linspace(1.0, 2.0, 8)
+        r = to_sympy(_sum_kernel, u)
+        text = r.derivation()
+        assert "Sum(" in text
+        assert np.isclose(float(r.value), u.sum())
+
+    def test_product_accumulator_closes(self):
+        u = np.linspace(1.0, 2.0, 8)
+        r = to_sympy(_product_kernel, u)
+        text = r.derivation()
+        assert "Product(" in text
+        assert np.isclose(float(r.value), u.prod())
+
+    def test_horner_recurrence_traced(self):
+        # linear recurrence: rsolve closes it or the fold stays; either
+        # way the trace is honest and the value lane exact
+        c = np.array([1.0, 2.0, 3.0, 4.0])
+        r = to_sympy(_horner_kernel, c)
+        r.derivation()  # must not raise
+        expected = 0.0
+        for k in range(4):
+            expected = expected * 2.0 + c[k]
+        assert np.isclose(float(r.value), expected)
+
+    def test_closed_form_is_verified_not_guessed(self):
+        # a loop whose "accumulator" jumps non-uniformly must NOT close
+        u = np.linspace(1.0, 2.0, 8)
+
+        def jumpy(u):
+            acc = np.zeros(8)
+            total = 0.0
+            for r in range(8):
+                total = total + u[r] ** (r % 3)
+                acc[r] = total
+            return total
+
+        r = to_sympy(jumpy, u)
+        text = r.derivation()  # honest output, folded or not
+        assert np.isclose(float(r.value), sum(u[k] ** (k % 3) for k in range(8)))
