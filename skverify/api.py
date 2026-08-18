@@ -5,7 +5,7 @@ import inspect
 import numpy as np
 import sympy
 
-from .pair import _GUARDS, Pair
+from .pair import _GUARDS, _OPAQUE, Pair
 from .helpers import axis_idx
 
 
@@ -18,13 +18,29 @@ def to_sympy(fn, *args):
     (an ``n=``, an ``axis=``), not mathematics.
     Returns the traced result: ``.formula``, ``.value``, ``.domain``.
     """
+    from .instrument import instrument
+
     wrapped = [_wrap(name, val) for name, val in _infer_names(fn, args)]
     _GUARDS.clear()
-    out = _repack(fn(*wrapped))
+    _OPAQUE.clear()
+    sites = ()
+    try:
+        out = _repack(fn(*wrapped))
+    except (NotImplementedError, ValueError, TypeError, AttributeError):
+        # a wall the plain trace cannot pass; retry a semantically
+        # identical instrumented copy (math-neutral calls replaced)
+        fn_run, sites = instrument(fn)
+        if not sites:
+            raise
+        _GUARDS.clear()
+        _OPAQUE.clear()
+        out = _repack(fn_run(*wrapped))
     if isinstance(out, Pair):
         # every branch taken during the trace, as one hypothesis: the
         # formula holds for inputs satisfying these preconditions
         out.preconditions = sympy.And(*_GUARDS) if _GUARDS else sympy.true
+        out.unchecked = tuple(_OPAQUE)
+        out.instrumented = sites
     return out
 
 
@@ -44,8 +60,14 @@ def _repack(out):
     into a single Pair: values as a real ndarray, formulas as a sympy.Array.
     """
     if isinstance(out, Pair):
-        if out.domain is None and isinstance(out.formula, sympy.Add):
-            folded = _fold_add(out.formula)
+        if out.domain is None and isinstance(out.formula, (sympy.Add, sympy.Mul)):
+            folded = _fold_poly(out.formula)
+            if folded is None and isinstance(out.formula, sympy.Add):
+                folded = _fold_add(out.formula)
+            if folded is None:
+                expanded = sympy.expand(out.formula)
+                if isinstance(expanded, sympy.Add):
+                    folded = _fold_add(expanded)
             if folded is not None:
                 return Pair(out.value, folded, None)
         return out
@@ -73,11 +95,63 @@ def _repack(out):
 
 
 def _shift_indices(expr, offset):
-    """u[0] - u[1]  ->  u[0 + offset] - u[1 + offset], every index shifted."""
+    """u[0] - u[1] -> u[offset] - u[1 + offset]. Only concrete integer
+    indices move; symbolic letters (a surviving row index) stay put."""
     return expr.replace(
         lambda x: isinstance(x, sympy.Indexed),
-        lambda x: x.base[tuple(e + offset for e in x.indices)],
+        lambda x: x.base[tuple(e + offset if e.is_Integer else e for e in x.indices)],
     )
+
+
+def _shift_slot(expr, offset, slot):
+    """Shift index position `slot` only: y[0, 3] -> y[0 + offset, 3]."""
+
+    def shifted(x):
+        idx = list(x.indices)
+        if slot < len(idx):
+            idx[slot] = idx[slot] + offset
+        return x.base[tuple(idx)]
+
+    return expr.replace(lambda x: isinstance(x, sympy.Indexed), shifted)
+
+
+def _fold_poly(expr):
+    """Horner nests fold through their polynomial coefficients.
+
+    ((c[0]*x + c[1])*x + c[2])  ->  Sum(c[j]*x**(2 - j), (j, 0, 2))
+
+    Proven, not guessed: sympy.Poly extracts the coefficient list and the
+    fold happens only if it is exactly c[0], c[1], ..., c[n-1] of one base.
+    """
+    from .helpers import _AXIS_SYMBOLS
+
+    indexed = list(expr.atoms(sympy.Indexed))
+    if not indexed:
+        return None
+    bases = {a.base for a in indexed}
+    if len(bases) != 1:
+        return None
+    base = bases.pop()
+    labels = {sympy.Symbol(str(b.base)) for b in indexed}
+    xs = [
+        s
+        for s in expr.free_symbols
+        if isinstance(s, sympy.Symbol) and s not in _AXIS_SYMBOLS and s not in labels
+    ]
+    if len(xs) != 1:
+        return None
+    x = xs[0]
+    try:
+        coeffs = sympy.Poly(expr, x).all_coeffs()
+    except sympy.PolynomialError:
+        return None
+    n = len(coeffs)
+    if n < 3:
+        return None
+    if any(coeffs[k] != base[k] for k in range(n)):
+        return None
+    j = sympy.Symbol("j", integer=True)
+    return sympy.Sum(base[j] * x ** (n - 1 - j), (j, 0, n - 1))
 
 
 def _fold_add(expr):
@@ -94,11 +168,9 @@ def _fold_add(expr):
     terms = list(expr.args)
     keyed = []
     for t in terms:
-        idxs = [e for a in t.atoms(sympy.Indexed) for e in a.indices]
+        idxs = [e for a in t.atoms(sympy.Indexed) for e in a.indices if e.is_Integer]
         if not idxs:
-            return None  # loose constants: out of scope, keep the Add
-        if not all(e.is_Integer for e in idxs):
-            return None  # already symbolic: nothing to fold
+            return None  # loose constants or fully symbolic: nothing to fold
         keyed.append((min(idxs), t))
     keyed.sort(key=lambda kt: kt[0])
     terms = [t for _, t in keyed]
@@ -148,6 +220,22 @@ def _recompress(formulas):
             for k in range(len(formulas))
         ):
             return candidate
+
+    # per-slot: elements that differ only in ONE index position, e.g. the
+    # per-row integrals of a 2-D reduction: e_r = 0.05*y[r,0] + ...
+    slots = {len(a.indices) for f in formulas for a in f.atoms(sympy.Indexed)}
+    if slots and max(slots) > 1:
+        for slot in range(max(slots)):
+            candidate = _shift_slot(formulas[0], i, slot)
+            if all(
+                sympy.expand(candidate.subs(i, k) - formulas[k]) == 0
+                for k in range(len(formulas))
+            ):
+                if isinstance(candidate, sympy.Add):
+                    inner = _fold_add(candidate)
+                    if inner is not None:
+                        return inner
+                return candidate
 
     # cumulative: elements that GROW (running sums) are prefix sums of a
     # shiftable difference.  cumtrapz: elem[k+1]-elem[k] = y[k+1]/2 + y[k+2]/2

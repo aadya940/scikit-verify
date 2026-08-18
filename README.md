@@ -118,21 +118,30 @@ Current support covers N-dimensional vectorized NumPy code (up to 5-D):
 - `np.where` (lifted to `Piecewise`), `np.sum` (lifted to `Sum`,
   full reduction), `np.zeros_like` / `np.ones_like` / `np.full_like`
 - uniform constant arrays as operands
+- item assignment: `out[1:-1] = ...` boundary and stencil writes become
+  `Piecewise` scatters; masked writes (`u[u > 0] = c`) included
+- data-dependent branches: `if x > 0:` is decided by the real values and
+  recorded, and the result carries `.preconditions`, the hypotheses under
+  which its formula holds
+- compiled routines become named opaque nodes (`solve(A[i, j], b[i])`)
+  with per-call contract checks recorded in `.unchecked`; the trace
+  continues around them
 - unmapped pure-Python NumPy functions, traced through their own source
   (formulas come out per-element rather than indexed); real library code
   built on these lifts unmodified: `scipy.integrate.trapezoid`,
   `simpson`, `cumulative_trapezoid`, `np.diff`, `np.dot`
 
 Every produced formula is exact, checked against the numerical
-execution. What cannot be traced exactly raises `NotImplementedError`
-naming the blocker: compiled (C) routines, conversions that would
-discard the formula (`float()`, dtype-forcing coercions), and
-operations whose semantics are not yet implemented. There is no silent
-fallback.
+execution. Compiled routines appear as named opaque nodes and are
+listed in `.unchecked` rather than silently absorbed. Everything else
+that cannot be traced exactly raises `NotImplementedError` naming the
+blocker: conversions that would discard the formula (`float()`,
+dtype-forcing coercions) and operations whose semantics are not yet
+implemented. There is no silent fallback.
 
-Planned, in order: in-place assignment, branch capture (data-dependent
-`if` becomes a recorded precondition), and contract-based handling of
-compiled routines (`scipy.linalg`, `scipy.sparse`).
+Planned, in order: a broader contract library for compiled routines,
+strided and view-aware assignment, and equation-level validators
+(`skverify.checks`: `against`, `conserves_mass`, `centered` exist today).
 
 ## Installation
 

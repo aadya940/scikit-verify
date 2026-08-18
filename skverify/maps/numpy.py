@@ -118,11 +118,18 @@ def _fresh_dummy(formula, n_axes, base="j"):
 def _sum(a, axis=None, **kwargs):
     if kwargs:
         raise NotImplementedError(f"np.sum kwargs {list(kwargs)} not supported")
-    if not isinstance(a, Pair) or a.domain is None:
-        return np.sum(a)  # plain input, not ours
+    if isinstance(a, Pair) and a.domain is None:
+        return a  # the sum of a scalar is itself
+    if not isinstance(a, Pair):
+        if isinstance(a, np.ndarray) and a.dtype == object:
+            total = a.ravel()[0]
+            for e in a.ravel()[1:]:
+                total = total + e  # element dunders keep the trace
+            return total
+        return np.sum(np.asarray(a))
 
     a = Pair(
-        a.value, Pair._bridge_numeric(a.formula), a._axis_bounds, steps=a.steps
+        a.value, Pair._bridge_numeric(a.formula), a._axis_bounds, steps=(a,)
     )  # np.sum(u > 0) counts: Boolean -> 0/1 before the Sum
     bounds = a._axis_bounds
     if isinstance(axis, tuple):
@@ -144,7 +151,7 @@ def _sum(a, axis=None, **kwargs):
             np.sum(a.value, axis=k),
             formula,
             new_bounds or None,
-            steps=a.steps,
+            steps=(a,),
         )
 
     # one Sum per axis, innermost axis innermost:
@@ -163,7 +170,85 @@ def _sum(a, axis=None, **kwargs):
     for ax in reversed(range(len(bounds))):
         lo, hi = bounds[ax]
         formula = sympy.Sum(formula, (dummies[ax], lo, hi - 1))  # inclusive
-    return Pair(np.sum(a.value), formula, None, steps=a.steps)
+    return Pair(np.sum(a.value), formula, None, steps=(a,))
+
+
+def _matmul(a, b):
+    """Contraction as a Sum, numpy matmul semantics for every rank.
+
+    A (n x m) @ B (m x p) -> Sum(A[i, k]*B[k, j], (k, 0, m-1))
+    1-D operands lose their would-be axis; leading axes are batch dims
+    and broadcast (an extent-1 batch axis indexes at 0).
+    """
+    bounds_a, bounds_b = Pair._domain_of(a), Pair._domain_of(b)
+    if bounds_a is None or bounds_b is None:
+        raise ValueError("matmul: both operands must be at least 1-D")
+    na, nb = len(bounds_a), len(bounds_b)
+    value = np.matmul(Pair._value_of(a), Pair._value_of(b))
+    res_bounds = tuple((0, int(s)) for s in np.shape(value))
+    a2, b2 = na >= 2, nb >= 2
+    nbatch = len(res_bounds) - a2 - b2
+
+    fa = Pair._bridge_numeric(Pair._formula_of(a))
+    fb = Pair._bridge_numeric(Pair._formula_of(b))
+    # the result letters SURVIVE in the formula (unlike _sum, which
+    # substitutes every letter away), so the dummy must dodge them too
+    taken = {s.name for s in (fa * fb).atoms(sympy.Symbol)}
+    taken |= {axis_idx(ax).name for ax in range(len(res_bounds))}
+    name, n = "k", 2
+    while name in taken:
+        name, n = f"k{n}", n + 1
+    k = sympy.Symbol(name, integer=True)
+
+    def batch_target(bounds, ax, pos):
+        # operand batch axis -> result batch letter; extent 1 broadcasts,
+        # so it indexes at 0 regardless of the result letter
+        extent = bounds[ax][1] - bounds[ax][0]
+        res_extent = res_bounds[pos][1] - res_bounds[pos][0]
+        if extent == 1 and res_extent != 1:
+            return sympy.Integer(0)
+        return axis_idx(pos)
+
+    sub_a = {}
+    if a2:
+        sub_a[axis_idx(na - 1)] = k
+        sub_a[axis_idx(na - 2)] = axis_idx(nbatch)
+        for ax in range(na - 2):
+            sub_a[axis_idx(ax)] = batch_target(bounds_a, ax, nbatch - (na - 2) + ax)
+    else:
+        sub_a[axis_idx(0)] = k
+
+    sub_b = {}
+    if b2:
+        sub_b[axis_idx(nb - 2)] = k
+        sub_b[axis_idx(nb - 1)] = axis_idx(nbatch + a2)
+        for ax in range(nb - 2):
+            sub_b[axis_idx(ax)] = batch_target(bounds_b, ax, nbatch - (nb - 2) + ax)
+    else:
+        sub_b[axis_idx(0)] = k
+
+    lo, hi = bounds_a[na - 1]
+    formula = sympy.Sum(
+        fa.subs(sub_a, simultaneous=True) * fb.subs(sub_b, simultaneous=True),
+        (k, 0, hi - lo - 1),
+    )
+    return Pair(value, formula, res_bounds or None, steps=Pair._steps_of(a, b))
+
+
+def _dot(a, b, out=None):
+    if out is not None:
+        raise NotImplementedError("np.dot out= not supported")
+    if Pair._domain_of(a) is None or Pair._domain_of(b) is None:
+        return a * b  # np.dot with a scalar multiplies
+    if len(Pair._domain_of(a)) > 2 or len(Pair._domain_of(b)) > 2:
+        raise NotImplementedError(
+            "np.dot N-D contracts differently from matmul; use np.matmul or @"
+        )
+    return _matmul(a, b)
+
+
+FUNCTION_TABLE[np.matmul] = _matmul
+FUNCTION_TABLE[np.dot] = _dot
 
 
 def _zeros_like(a, **kwargs):
@@ -188,6 +273,43 @@ def _full_like(a, fill_value, **kwargs):
     )
 
 
+def _empty_like(a, dtype=None, **kwargs):
+    bounds = Pair._domain_of(a)
+    letters = tuple(axis_idx(ax) for ax in range(len(bounds)))
+    return Pair(
+        np.empty(tuple(hi - lo for lo, hi in bounds)),
+        sympy.Function("uninitialized")(*letters),
+        bounds,
+    )
+
+
+def _gradient(f, *varargs, axis=None, edge_order=1):
+    if not isinstance(f, Pair) or len(f._axis_bounds) != 1:
+        raise NotImplementedError("gradient: 1-D traced input only")
+    if axis not in (None, 0, -1) or edge_order != 1:
+        raise NotImplementedError("gradient: axis/edge_order not supported")
+    if len(varargs) > 1 or (varargs and not np.isscalar(Pair._value_of(varargs[0]))):
+        raise NotImplementedError("gradient: uniform scalar spacing only")
+    dx = varargs[0] if varargs else 1.0
+    out = np.zeros_like(f)
+    out[1:-1] = (f[2:] - f[:-2]) / (2.0 * dx)
+    out[0] = (f[1] - f[0]) / dx
+    out[-1] = (f[-1] - f[-2]) / dx
+    return out
+
+
+FUNCTION_TABLE[np.gradient] = _gradient
+
+
+def _ascontiguousarray(a, dtype=None, **kwargs):
+    if not isinstance(a, Pair):
+        return np.ascontiguousarray(a, dtype=dtype)
+    value = np.ascontiguousarray(a.value, dtype=dtype)
+    return Pair(value, a.formula, a._axis_bounds, steps=(a,))
+
+
+FUNCTION_TABLE[np.ascontiguousarray] = _ascontiguousarray
+FUNCTION_TABLE[np.empty_like] = _empty_like
 FUNCTION_TABLE[np.zeros_like] = _zeros_like
 FUNCTION_TABLE[np.ones_like] = _ones_like
 FUNCTION_TABLE[np.full_like] = _full_like
@@ -196,7 +318,7 @@ FUNCTION_TABLE[np.full_like] = _full_like
 def _count(a):
     """Sum(Piecewise((1, cond), (0, True))) over the mask's domain."""
     bridged = Pair(
-        a.value, Pair._bridge_numeric(a.formula), a._axis_bounds, steps=a.steps
+        a.value, Pair._bridge_numeric(a.formula), a._axis_bounds, steps=(a,)
     )
     return _sum(bridged)
 
@@ -206,14 +328,14 @@ def _all(a, axis=None, **kwargs):
     if kwargs or axis is not None:
         raise NotImplementedError("all() kwargs/axis not supported yet")
     n = int(np.prod([hi - lo for lo, hi in a._axis_bounds]))
-    return Pair(np.all(a.value), sympy.Eq(_count(a).formula, n), None, steps=a.steps)
+    return Pair(np.all(a.value), sympy.Eq(_count(a).formula, n), None, steps=(a,))
 
 
 def _any(a, axis=None, **kwargs):
     # m.any(): "cond holds SOMEWHERE" == count positive
     if kwargs or axis is not None:
         raise NotImplementedError("any() kwargs/axis not supported yet")
-    return Pair(np.any(a.value), sympy.Gt(_count(a).formula, 0), None, steps=a.steps)
+    return Pair(np.any(a.value), sympy.Gt(_count(a).formula, 0), None, steps=(a,))
 
 
 FUNCTION_TABLE[np.sum] = _sum

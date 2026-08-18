@@ -102,6 +102,71 @@ class TestCumulativeFold:
         assert a.domain == (0, 4) and b.domain == (0, 8)
 
 
+class TestSlotFold:
+    @pytest.mark.parametrize("rows", [2, 3, 5])
+    def test_2d_trapezoid_folds_per_row(self, rows):
+        from scipy.integrate import trapezoid
+
+        Y2 = np.random.default_rng(rows).random((rows, 8))
+        t = to_sympy(lambda y: trapezoid(y, dx=0.1, axis=1), Y2)
+        assert t.formula.has(sympy.Sum)
+        Y = sympy.IndexedBase("y")
+        m = {Y[r, c]: sympy.Float(Y2[r, c]) for r in range(rows) for c in range(8)}
+        for r in range(rows):
+            got = float(sympy.N(t.formula.subs(I, r).doit().xreplace(m)))
+            assert np.isclose(got, t.value[r])
+
+    def test_2d_simpson_folds_per_row(self):
+        from scipy.integrate import simpson
+
+        Y2 = np.random.default_rng(1).random((3, 9))
+        t = to_sympy(lambda y: simpson(y, dx=0.5, axis=1), Y2)
+        Y = sympy.IndexedBase("y")
+        m = {Y[r, c]: sympy.Float(Y2[r, c]) for r in range(3) for c in range(9)}
+        for r in range(3):
+            got = float(sympy.N(t.formula.subs(I, r).doit().xreplace(m)))
+            assert np.isclose(got, t.value[r])
+
+
+class TestPolyFold:
+    def test_horner_loop_folds_to_polynomial(self):
+        def horner(c, x):
+            s = 0.0
+            for k in range(len(c)):
+                s = s * x + c[k]
+            return s
+
+        r = to_sympy(horner, np.array([2.0, 3.0, 5.0, 1.0]), 1.5)
+        C = sympy.IndexedBase("c")
+        X = sympy.Symbol("x", real=True)
+        JD = sympy.Symbol("j", integer=True)
+        assert r.formula == sympy.Sum(C[JD] * X ** (3 - JD), (JD, 0, 3))
+        m = {C[k]: sympy.Float(v) for k, v in enumerate([2.0, 3.0, 5.0, 1.0])}
+        m[X] = sympy.Float(1.5)
+        assert np.isclose(float(sympy.N(r.formula.doit().xreplace(m))), r.value)
+
+    def test_ema_recurrence_stays_nested(self):
+        def ema(x, a):
+            s = 0.0
+            for k in range(len(x)):
+                s = a * s + (1 - a) * x[k]
+            return s
+
+        r = to_sympy(ema, np.arange(4.0), 0.5)
+        A = sympy.Symbol("a", real=True)
+        X = sympy.IndexedBase("x")
+        m = {X[k]: sympy.Float(v) for k, v in enumerate(np.arange(4.0))}
+        m[A] = sympy.Float(0.5)
+        assert np.isclose(float(sympy.N(r.formula.doit().xreplace(m))), r.value)
+
+    def test_mixed_bases_refuse(self):
+        from skverify.api import _fold_poly
+
+        C, D = sympy.IndexedBase("c"), sympy.IndexedBase("d")
+        X = sympy.Symbol("x")
+        assert _fold_poly((C[0] * X + D[1]) * X + C[2]) is None
+
+
 class TestFoldRefusals:
     def test_truly_irregular_elements_refuse(self):
         # neither shifted copies nor a shiftable difference

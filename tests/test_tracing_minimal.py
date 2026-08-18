@@ -78,10 +78,11 @@ class TestWrappedFallback:
         assert isinstance(s.formula, sympy.Sum)
 
     def test_dot_traces_as_inner_product(self):
-        # np.dot's python wrapper runs; decompression + dunders do the rest
+        # np.dot routes to the matmul contraction: one Sum, not unrolled
         u = make()
         r = np.dot(u, u)
-        assert r.formula == U[0] ** 2 + U[1] ** 2 + U[2] ** 2 + U[3] ** 2
+        k = sympy.Symbol("k", integer=True)
+        assert r.formula == sympy.Sum(U[k] ** 2, (k, 0, 3))
         assert r.value == np.dot(u.value, u.value)
 
     def test_to_sympy_recompresses_unrolled_results(self):
@@ -164,9 +165,67 @@ class TestWrappedFallback:
         assert r[0].formula == sympy.log(U[0])
         assert float(r[0].value) == np.log(u.value[0])
 
+    def test_gradient_lifts_with_boundaries(self):
+        from skverify import to_sympy
+
+        x = 4 * np.linspace(0, 20, 8)
+        r = to_sympy(np.gradient, x)
+        assert np.allclose(r.value, np.gradient(x))
+        assert r.formula.has(sympy.Piecewise)
+
+    def test_hmean_lifts_through_coercion(self):
+        from skverify import to_sympy
+        from scipy.stats import hmean
+
+        x = np.linspace(1, 2, 6)
+        r = to_sympy(hmean, x)
+        assert np.isclose(float(r.value), hmean(x))
+
     def test_median_traces_through_guarded_sort(self):
         # median's body compares and branches; guards record each branch
         # and the concrete lane keeps it running
         u = make()
         r = np.median(u)
         assert float(r.value) == np.median(u.value)
+
+
+class TestArrayCoercionEdges:
+    def test_object_dtype_decompression(self):
+        u = make()
+        obj = np.asarray(u)
+        assert obj.dtype == np.dtype(object)
+        assert obj.shape == (4,)
+        assert all(isinstance(e, Pair) for e in obj)
+
+    def test_forced_dtype_refused(self):
+        u = make()
+        with pytest.raises(NotImplementedError):
+            np.asarray(u, dtype=float)
+
+    def test_unroll_cap_refused(self):
+        big = Pair.array("b", np.zeros(5000))
+        with pytest.raises(NotImplementedError):
+            np.asarray(big)
+
+    def test_scalar_pair_coerces_to_0d(self):
+        x = Pair(3.0, sympy.Symbol("x"))
+        obj = np.asarray(x)
+        assert obj.shape == ()
+        assert isinstance(obj[()], Pair)
+
+
+class TestRepr:
+    def test_scalar(self):
+        p = Pair(2.0, sympy.Symbol("a"))
+        assert repr(p) == "Pair(a)"
+
+    def test_array_shows_domain(self):
+        u = Pair.array("u", np.arange(4.0))
+        assert repr(u) == "Pair(u[i], domain=(0, 4))"
+
+    def test_long_formula_truncates(self):
+        i = sympy.Symbol("i", integer=True)
+        long = sum(sympy.exp(U[i] + n) for n in range(10))
+        r = Pair(np.arange(4.0), long, (0, 4))
+        assert len(repr(r)) <= 90
+        assert "..." in repr(r)

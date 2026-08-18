@@ -14,6 +14,7 @@ from .helpers import (
 IDX = axis_idx(0)  # `i`
 
 _GUARDS = []  # branch conditions taken during a trace; harvested by to_sympy
+_OPAQUE = []  # opaque compiled calls made during a trace, with contract verdicts
 
 
 class Pair:
@@ -24,29 +25,63 @@ class Pair:
     def __init__(self, value, formula, domain=None, steps=None):
         self.value = value  # the real ndarray/scalar, what executes
         self.formula = formula  # the sympy Expr, what it means
-        # the derivation: every intermediate formula that led here, in
-        # execution order, ending with this one. Two runs taking different
-        # branches produce different steps, because different ops ran.
-        self.steps = (steps or []) + [formula]
+        # provenance is a DAG of parent Pairs; .steps flattens it on
+        # demand, deduplicating shared ancestors. Two runs taking
+        # different branches produce different steps, because different
+        # ops ran.
+        self._parents = tuple(steps or ())
 
         if domain is not None and not isinstance(domain[0], tuple):
             domain = (domain,)
 
         self._axis_bounds = domain  # for ndarray
 
+    def __repr__(self):
+        text = str(self.formula)
+        if len(text) > 60:
+            text = text[:57] + "..."
+        if self._axis_bounds is None:
+            return f"Pair({text})"
+        return f"Pair({text}, domain={self.domain})"
+
+    @property
+    def steps(self):
+        seen = set()
+        out = []
+        stack = [(self, False)]
+        while stack:
+            node, expanded = stack.pop()
+            if expanded:
+                out.append(node.formula)
+                continue
+            if id(node) in seen:
+                continue
+            seen.add(id(node))
+            stack.append((node, True))
+            for parent in reversed(node._parents):
+                stack.append((parent, False))
+        return out
+
     @staticmethod
     def _steps_of(*operands):
-        collected = []
-        for x in operands:
-            if isinstance(x, Pair):
-                collected.extend(x.steps)
-        return collected
+        return tuple(x for x in operands if isinstance(x, Pair))
 
     @staticmethod
     def _formula_of(x):
         if isinstance(x, Pair):
             return x.formula
         if isinstance(x, np.ndarray):
+            if x.dtype == object:
+                elems = x.ravel()
+                if all(isinstance(e, Pair) for e in elems):
+                    from .api import _recompress
+
+                    rule = _recompress([e.formula for e in elems])
+                    if rule is not None:
+                        return rule
+                    raise NotImplementedError(
+                        "decompressed operand without a provable pattern"
+                    )
             vals = np.unique(x)
             if len(vals) == 1:  # uniform: zeros, ones, full
                 return sympy.sympify(vals.item())  # constant field, clean
@@ -104,7 +139,13 @@ class Pair:
 
     @staticmethod
     def _value_of(x):
-        return x.value if isinstance(x, Pair) else x
+        if isinstance(x, Pair):
+            return x.value
+        if isinstance(x, np.ndarray) and x.dtype == object:
+            elems = x.ravel()
+            if all(isinstance(e, Pair) for e in elems):
+                return np.array([e.value for e in elems], dtype=float).reshape(x.shape)
+        return x
 
     @staticmethod
     def _shift_axes(formula, bounds, ndim):
@@ -190,7 +231,7 @@ class Pair:
                     f"index map {old_sym} -> {expr} is not affine"
                 )
         formula = self.formula.subs(index_map, simultaneous=True)
-        return Pair(value, formula, domain=axis_bounds or None, steps=self.steps)
+        return Pair(value, formula, domain=axis_bounds or None, steps=(self,))
 
     def _getitem_nd(self, key):
         # u[1:, 2] on a 4x7 array -> entries ((1, 4), 2)
@@ -212,11 +253,104 @@ class Pair:
             else:
                 # u[2] : u[i, j] -> u[2, i], row axis gone, survivor renamed
                 index_map[sym] = sympy.Integer(entry)
+        value = self.value[key]
+        if isinstance(value, np.ndarray):
+            value = value.copy()  # slices are value-semantic: no view aliasing
         return self._remap(
-            value=self.value[key],  # raw key: numpy interprets it independently
+            value=value,  # raw key: numpy interprets it independently
             index_map=index_map,
             axis_bounds=tuple(new_bounds),  # u[2, 3] -> (), remap makes it scalar
         )
+
+    def __setitem__(self, key, val):
+        # u[2:5] = v: the formula becomes a scatter, old rule outside the
+        # written region, the value's rule (re-indexed) inside it
+        if self._axis_bounds is None:
+            raise TypeError("scalar Pair does not support item assignment")
+        if isinstance(key, Pair):
+            if Pair._is_condition(key.formula):
+                if isinstance(val, (Pair, np.ndarray)) and np.ndim(Pair._value_of(val)):
+                    raise NotImplementedError(
+                        "masked assignment with an array value is data-dependent"
+                    )
+                self.value[key.value] = Pair._value_of(val)
+                prior = self.formula
+                self.formula = sympy.Piecewise(
+                    (Pair._formula_of(val), key.formula), (prior, True)
+                )
+                self._record_write(prior, key, val)
+                return
+            raise NotImplementedError("only boolean Pair keys are supported")
+
+        lengths = tuple(hi - lo for lo, hi in self._axis_bounds)
+        entries = normalize_key(key, lengths)
+        seq = None
+        if isinstance(val, (tuple, list)):
+            seq = list(val)
+        elif isinstance(val, np.ndarray) and val.dtype == object:
+            seq = list(val.ravel())
+        if seq is not None:
+            # a sequence of traced scalars: decompose into scalar writes
+            axes_ranges = []
+            for ax, entry in enumerate(entries):
+                if isinstance(entry, tuple):
+                    start, stop, step = entry
+                    if step != 1:
+                        raise NotImplementedError(
+                            "strided assignment not supported yet"
+                        )
+                    axes_ranges.append(range(start, stop))
+                else:
+                    axes_ranges.append(range(entry, entry + 1))
+            positions = list(np.ndindex(*[len(r) for r in axes_ranges]))
+            if len(positions) != len(seq):
+                raise NotImplementedError(
+                    "assigned sequence length must match the region"
+                )
+            for pos, elem in zip(positions, seq):
+                concrete = tuple(axes_ranges[ax][p] for ax, p in enumerate(pos))
+                self[concrete if len(concrete) > 1 else concrete[0]] = elem
+            return
+        val_formula = Pair._formula_of(val)
+        condition = []
+        val_map = {}
+        val_rank = 0
+        for ax, entry in enumerate(entries):
+            sym = axis_idx(ax)
+            if isinstance(entry, tuple):
+                start, stop, step = entry
+                if step != 1:
+                    raise NotImplementedError("strided assignment not supported yet")
+                if not (start == 0 and stop == lengths[ax]):
+                    condition.append(sympy.Ge(sym, start))
+                    condition.append(sympy.Lt(sym, stop))
+                val_map[axis_idx(val_rank)] = sym - start
+                val_rank += 1
+            else:
+                condition.append(sympy.Eq(sym, entry))
+        if isinstance(val, Pair) and val._axis_bounds is not None:
+            if len(val._axis_bounds) != val_rank:
+                raise NotImplementedError(
+                    "assigned value rank must match the sliced region"
+                )
+            val_formula = val_formula.subs(
+                {k: v for k, v in val_map.items()}, simultaneous=True
+            )
+        self.value[key] = Pair._value_of(val)
+        prior = self.formula
+        if condition:
+            self.formula = sympy.Piecewise(
+                (val_formula, sympy.And(*condition)), (prior, True)
+            )
+        else:
+            self.formula = val_formula
+        self._record_write(prior, val)
+
+    def _record_write(self, prior_formula, *operands):
+        # an in-place write mutates formula; the pre-write state becomes
+        # a parent node so the DAG keeps the whole derivation
+        prior = Pair(self.value, prior_formula, self._axis_bounds, steps=self._parents)
+        self._parents = (prior,) + Pair._steps_of(*operands)
 
     def transpose(self, axes=None):
         # u (4x7), u.T: u[i, j] -> u[j, i], bounds ((0,4),(0,7)) -> ((0,7),(0,4))
@@ -238,6 +372,22 @@ class Pair:
     @property
     def T(self):
         return self.transpose()
+
+    def reshape(self, shape, *rest):
+        if rest:
+            shape = (shape, *rest)
+        if isinstance(shape, (int, np.integer)):
+            shape = (int(shape),)
+        shape = tuple(int(n) for n in shape)
+        current = tuple(hi - lo for lo, hi in (self._axis_bounds or ()))
+        target = tuple(
+            current and int(np.prod(current)) if n == -1 else n for n in shape
+        )
+        if target == current:
+            return self
+        raise NotImplementedError(
+            "reshape that changes the layout is not supported yet"
+        )
 
     def __add__(self, other):
         mine, theirs, merged = Pair._broadcast(self, other)
@@ -280,12 +430,22 @@ class Pair:
 
     __rmul__ = __mul__
 
+    def __matmul__(self, other):
+        from .maps.numpy import _matmul
+
+        return _matmul(self, other)
+
+    def __rmatmul__(self, other):
+        from .maps.numpy import _matmul
+
+        return _matmul(other, self)
+
     def __abs__(self):
         return Pair(
             abs(self.value),
             sympy.Abs(self.formula),
             domain=self._axis_bounds,
-            steps=self.steps,
+            steps=(self,),
         )
 
     def __bool__(self):
@@ -303,8 +463,31 @@ class Pair:
             "for masks use .all()/.any(), for combining use & | ~"
         )
 
-    # bare-number conversions discard the formula: the value keeps computing
-    # but the trace silently dies. Use .value for a deliberate exit.
+    def __array__(self, dtype=None, copy=None):
+        """Coercion is deliberate decompression: an indexed Pair becomes an
+        object array of per-element scalar Pairs, so the trace survives
+        element by element. Forced numeric dtypes would discard formulas."""
+        if dtype is not None and np.dtype(dtype) != object:
+            raise NotImplementedError(
+                f"coercion to dtype={dtype} would discard the formula"
+            )
+        if self._axis_bounds is None:
+            out = np.empty((), dtype=object)
+            out[()] = self
+            return out
+        shape = tuple(hi - lo for lo, hi in self._axis_bounds)
+        n = int(np.prod(shape))
+        if n > 4096:
+            raise NotImplementedError(
+                f"coercion would unroll {n} elements; the indexed form is lost"
+            )
+        out = np.empty(shape, dtype=object)
+        for idx in np.ndindex(shape):
+            out[idx] = self[idx if len(idx) > 1 else idx[0]]
+        return out
+
+    # bare-number conversions discard the formula: the trace silently dies
+    # otherwise. Use .value for a deliberate exit.
     def __float__(self):
         raise NotImplementedError(
             "float() on a traced value discards the formula; use .value"
@@ -375,7 +558,7 @@ class Pair:
 
     def __neg__(self):  # -self
         return Pair(
-            -self.value, -self.formula, domain=self._axis_bounds, steps=self.steps
+            -self.value, -self.formula, domain=self._axis_bounds, steps=(self,)
         )
 
     @classmethod
@@ -399,7 +582,32 @@ class Pair:
         """Slicing and integer indexing; 1-D is just the N=1 case."""
         if self._axis_bounds is None:
             raise TypeError("scalar Pair is not subscriptable")
+        gathered = self._fancy_gather(key)
+        if gathered is not None:
+            return gathered
         return self._getitem_nd(key)
+
+    def _fancy_gather(self, key):
+        """Concrete integer-array indexing (diag_indices and friends):
+        the positions are compile-time facts, so gather scalar Pairs per
+        position and return the decompressed object array."""
+
+        def is_index_array(k):
+            return (
+                isinstance(k, (list, np.ndarray)) and np.asarray(k).dtype.kind in "iu"
+            )
+
+        parts = key if isinstance(key, tuple) else (key,)
+        if not any(is_index_array(k) for k in parts):
+            return None
+        if not all(is_index_array(k) for k in parts):
+            raise NotImplementedError("mixed fancy/slice indexing not supported")
+        arrays = np.broadcast_arrays(*[np.asarray(k) for k in parts])
+        out = np.empty(arrays[0].shape, dtype=object)
+        for pos in np.ndindex(arrays[0].shape):
+            idx = tuple(int(a[pos]) for a in arrays)
+            out[pos] = self[idx if len(idx) > 1 else idx[0]]
+        return out
 
     def __array_ufunc__(self, ufunc, method, *inputs, out=None, **kwargs):
         if out is not None:
@@ -419,10 +627,18 @@ class Pair:
             return Pair._binary(inputs, Pair.__pow__, Pair.__rpow__, self)
         if ufunc is np.negative:
             return -inputs[0]
+        if ufunc is np.matmul:
+            from .maps.numpy import _matmul
+
+            return _matmul(*inputs)
 
         target = UFUNC_TABLE.get(ufunc)
         if target is None:
-            raise NotImplementedError(f"ufunc {ufunc.__name__} not mapped")
+            if ufunc.nout != 1:
+                raise NotImplementedError(
+                    f"ufunc {ufunc.__name__} has {ufunc.nout} outputs"
+                )
+            return Pair._opaque_call(ufunc, inputs, kwargs)
 
         values = [Pair._value_of(x) for x in inputs]
         domain = Pair._merge_domains(*(Pair._domain_of(x) for x in inputs))
@@ -442,18 +658,72 @@ class Pair:
             steps=Pair._steps_of(*inputs),
         )
 
+    @staticmethod
+    def _opaque_call(func, args, kwargs):
+        """A compiled routine the trace cannot enter: run it on the values,
+        name it in the formula, snapshot inputs against hidden mutation,
+        and record the call with its contract verdicts."""
+        from .contracts import check_call
+
+        pair_args = [a for a in args if isinstance(a, Pair)]
+        snapshots = [
+            np.asarray(a.value).tobytes()
+            for a in pair_args
+            if isinstance(a.value, np.ndarray)
+        ]
+        values = [Pair._value_of(a) for a in args]
+        result = func(*values, **kwargs)
+        after = [
+            np.asarray(a.value).tobytes()
+            for a in pair_args
+            if isinstance(a.value, np.ndarray)
+        ]
+        if snapshots != after:
+            raise NotImplementedError(
+                f"{func.__name__} mutated a traced input in place"
+            )
+        formulas = []
+        n_const = 0
+        for a in args:
+            if isinstance(a, Pair):
+                formulas.append(a.formula)
+            elif np.isscalar(a):
+                formulas.append(sympy.sympify(a))
+            elif isinstance(a, np.ndarray):
+                # a concrete operand: named, so the formula never hides it
+                formulas.append(sympy.Symbol(f"const{n_const}"))
+                n_const += 1
+        call = sympy.Function(func.__name__)(*formulas)
+        shape = np.shape(result) if hasattr(result, "shape") else ()
+        if shape:
+            # array output: a fresh indexed symbol, so downstream slicing
+            # and arithmetic work; the definition rides in the record
+            base = sympy.IndexedBase(f"{func.__name__}_{len(_OPAQUE)}")
+            letters = tuple(axis_idx(ax) for ax in range(len(shape)))
+            formula = base[letters]
+            domain = tuple((0, int(n)) for n in shape)
+        else:
+            formula = call
+            domain = None
+        _OPAQUE.append(
+            check_call(func.__name__, values, result) + ((str(formula), str(call)),)
+        )
+        return Pair(result, formula, domain=domain, steps=Pair._steps_of(*args))
+
     def __array_function__(self, func, types, args, kwargs):
         fn = FUNCTION_TABLE.get(func)
         if fn is not None:
             return fn(*args, **kwargs)  # curated: indexed formulas
+        from .contracts import CONTRACTS
+
+        if func.__name__ in CONTRACTS:
+            return Pair._opaque_call(func, args, kwargs)
         inner = getattr(func, "__wrapped__", None)
         if inner is not None:
             # pure-Python numpy: run its real body on the Pairs; slices and
             # arithmetic inside dispatch back here, formulas unrolled per element
             return inner(*args, **kwargs)
-        raise NotImplementedError(
-            f"np.{func.__name__} is compiled; needs a contract",
-        )
+        return Pair._opaque_call(func, args, kwargs)
 
 
 # relational & mask layer
@@ -515,7 +785,7 @@ def _invert(self):
         np.bitwise_not(self.value),
         sympy.Not(self.formula),
         domain=self._axis_bounds,
-        steps=self.steps,
+        steps=(self,),
     )
 
 

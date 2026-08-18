@@ -60,6 +60,20 @@ def mask_count(x):
     return np.sum(x > 0)
 
 
+def horner(c, x):
+    s = 0.0
+    for k in range(len(c)):
+        s = s * x + c[k]
+    return s
+
+
+def heat_step(u, r):
+    dudt = np.zeros_like(u)
+    dudt[1:-1] = u[2:] - 2 * u[1:-1] + u[:-2]
+    dudt[0] = 0.0
+    return u + r * dudt
+
+
 def _entries():
     from scipy.integrate import cumulative_trapezoid, simpson, trapezoid
     from scipy.stats import gmean, hmean
@@ -85,6 +99,10 @@ def _entries():
         "sigmoid": lambda: to_sympy(sigmoid, np.linspace(-1, 1, 6)),
         "two-pass variance": lambda: to_sympy(two_pass_variance, np.arange(6.0), 6),
         "mask count": lambda: to_sympy(mask_count, np.linspace(-1, 1, 6)),
+        "horner loop": lambda: to_sympy(horner, np.array([2.0, 3.0, 5.0]), 1.5),
+        "heat step (build-then-fill)": lambda: to_sympy(
+            heat_step, np.linspace(0, 1, 8) ** 2, 0.1
+        ),
         # scipy, unmodified
         "scipy trapezoid": lambda: to_sympy(lambda y: trapezoid(y, dx=0.1), y8),
         "scipy simpson": lambda: to_sympy(lambda y: simpson(y, dx=0.125), y9),
@@ -105,15 +123,19 @@ def _entries():
         "np.mean": lambda: to_sympy(np.mean, np.arange(5.0)),
         "np.var": lambda: to_sympy(np.var, np.arange(5.0)),
         "np.std": lambda: to_sympy(np.std, np.arange(5.0)),
-        # trackers: expected to DIE until the named feature lands
-        "np.gradient [tracker: guards/coercion]": lambda: to_sympy(
+        "np.gradient": lambda: to_sympy(
             np.gradient, 4 * np.linspace(0, 20, 8)
         ),
-        "np.polyval [tracker: guards]": lambda: to_sympy(
+        "np.polyval": lambda: to_sympy(
             np.polyval, np.array([2.0, 3.0, 5.0]), np.arange(4.0)
         ),
-        "np.median [tracker: guards]": lambda: to_sympy(np.median, np.arange(5.0)),
-        "np.clip [tracker: table entry]": lambda: to_sympy(
+        "np.median": lambda: to_sympy(np.median, np.arange(5.0)),
+        "np.linalg.solve (opaque + contract)": lambda: to_sympy(
+            lambda A, b: np.linalg.solve(A, b),
+            np.array([[4.0, 1.0], [1.0, 3.0]]),
+            np.array([1.0, 2.0]),
+        ),
+        "np.clip": lambda: to_sympy(
             np.clip, np.linspace(-1, 1, 6), 0.0, 0.5
         ),
     }
@@ -127,7 +149,11 @@ def main():
             f = getattr(r, "formula", r)
             p = getattr(r, "preconditions", r)
             print(f"LIFTS  {name}\n       {str(f)[:100]}")
-            print(f"PRECONDITIONS: {p}\n")
+            print(f"PRECONDITIONS: {p}")
+            unchecked = getattr(r, "unchecked", ())
+            if unchecked:
+                print(f"UNCHECKED: {unchecked}")
+            print()
             lifted += 1
         except Exception as e:
             print(f"DIES   {name}\n       {type(e).__name__}: {str(e)[:80]}")

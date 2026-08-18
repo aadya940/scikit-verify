@@ -63,8 +63,30 @@ OPS_1D = st.sampled_from(
         ("mask_count_times", lambda u, k: (u > 0.5) * u),
         ("sum_full", lambda u, k: np.sum(u)),
         ("mask_count", lambda u, k: np.sum(u > 0.5)),
+        ("write_int", lambda u, k: _written(u, k)),
+        ("write_slice", lambda u, k: _slice_written(u, k)),
+        ("write_mask", lambda u, k: _mask_written(u, k)),
     ]
 )
+
+
+def _written(u, k):
+    r = u * 1.0
+    r[k] = 0.25
+    return r
+
+
+def _slice_written(u, k):
+    r = u * 1.0
+    r[k:] = u[k:] * 2.0
+    return r
+
+
+def _mask_written(u, k):
+    r = u * 1.0
+    r[r > 0.5] = 0.5
+    return r
+
 
 VALUES = st.floats(-2.0, 2.0, allow_nan=False, width=32)
 
@@ -109,8 +131,22 @@ OPS_2D = st.sampled_from(
         ("sum_axis1", lambda u, k: np.sum(u, axis=1)),
         ("sum_full", lambda u, k: np.sum(u)),
         ("where", lambda u, k: np.where(u > 0.0, u, 0.0 * u)),
+        ("write_row", lambda u, k: _row_written(u, k)),
+        ("write_block", lambda u, k: _block_written(u, k)),
     ]
 )
+
+
+def _row_written(u, k):
+    r = u * 1.0
+    r[k, :] = 0.25
+    return r
+
+
+def _block_written(u, k):
+    r = u * 1.0
+    r[k:, 1:] = u[k:, 1:] * 2.0
+    return r
 
 
 @settings(max_examples=200, deadline=None)
