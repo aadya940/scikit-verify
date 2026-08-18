@@ -37,9 +37,14 @@ OPAQUE_CALLABLES = {
     "gbsv",
     "data_matrix",
     "fpback",
+    "evaluate_all_bspl",
 }
 NEUTRAL_METHODS = {"toarray", "astype", "copy", "view"}
 CONCRETE = {"isfinite", "isnan", "isinf"}  # validation checks, not math
+SCALARIZE = {"float", "int"}  # scalar coercion at a compiled boundary
+# compiled lookups whose result is bookkeeping (an interval index),
+# not mathematics: run on values, return the plain result
+CONCRETE_CALLABLES = {"find_interval"}
 # compiled routines that RETURN through array out-parameters (scipy's
 # Cython convention); value = argument positions of the out arrays
 OPAQUE_OUT = {"_coloc": (3,), "qr_reduce": (0, 3)}
@@ -118,6 +123,17 @@ def _skv_method(name, obj, *args, **kwargs):
 
 def _skv_concrete(name, a, *args, **kwargs):
     return getattr(np, name)(np.asarray(Pair._value_of(a)), *args, **kwargs)
+
+
+def _skv_scalarize(kind, x):
+    return kind(Pair._value_of(x))
+
+
+def _skv_concrete_call(fn):
+    def wrapper(*args, **kwargs):
+        return fn(*[Pair._value_of(a) for a in args], **kwargs)
+
+    return wrapper
 
 
 def _skv_opaque_out(fn, out_idxs, transposed, *args, **kwargs):
@@ -309,6 +325,20 @@ class _Rewriter(ast.NodeTransformer):
                 args=[ast.Constant(value=name)] + node.args,
                 keywords=node.keywords,
             )
+        elif name in SCALARIZE and isinstance(node.func, ast.Name):
+            self.sites.append(f"{name} -> concrete scalar")
+            node = ast.Call(
+                func=ast.Name(id="__skv_scalarize__", ctx=ast.Load()),
+                args=[node.func] + node.args,
+                keywords=[],
+            )
+        elif name in CONCRETE_CALLABLES:
+            self.sites.append(f"{name} -> concrete lookup")
+            node.func = ast.Call(
+                func=ast.Name(id="__skv_concrete_call__", ctx=ast.Load()),
+                args=[node.func],
+                keywords=[],
+            )
         elif name in OPAQUE_CALLABLES:
             self.sites.append(f"{name} -> opaque contract call")
             node.func = ast.Call(
@@ -388,6 +418,8 @@ def _instrument(fn, depth, seen):
     namespace["__skv_opaque__"] = _skv_opaque
     namespace["__skv_method__"] = _skv_method
     namespace["__skv_concrete__"] = _skv_concrete
+    namespace["__skv_scalarize__"] = _skv_scalarize
+    namespace["__skv_concrete_call__"] = _skv_concrete_call
     namespace["__skv_opaque_out__"] = _skv_opaque_out
     namespace["__skv_loop_iter__"] = _loop_iter
     namespace["__skv_loop_end__"] = _loop_end

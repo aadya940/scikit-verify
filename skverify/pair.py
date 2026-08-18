@@ -380,6 +380,8 @@ class Pair:
         _SEQ_N += 1
         self._seq = _SEQ_N  # creation order, keys into the loop event log
 
+        if domain is not None and len(domain) == 0:
+            domain = None  # 0-d allocation: a scalar
         if domain is not None and not isinstance(domain[0], tuple):
             domain = (domain,)
 
@@ -557,18 +559,30 @@ class Pair:
                 continue
             if len(d) != len(result):
                 # (4, 7) meeting (7,): line the short one up against the
-                # END of the long one and check those axes agree
+                # END of the long one and merge those axes
                 short, long = sorted((d, result), key=len)
-                if short != long[len(long) - len(short) :]:
-                    raise ValueError(f"cannot broadcast {short} with {long}")
-                result = long
+                head = long[: len(long) - len(short)]
+                tail = long[len(long) - len(short) :]
+                result = head + Pair._merge_axes(short, tail)
                 continue
-            for ax, (result_item, d_item) in enumerate(zip(result, d)):
-                if d_item != result_item:
-                    raise ValueError(
-                        f"domain mismatch at axis {ax}: {result_item} vs {d_item}"
-                    )
+            result = Pair._merge_axes(d, result)
         return result
+
+    @staticmethod
+    def _merge_axes(d, result):
+        merged = []
+        for ax, (result_item, d_item) in enumerate(zip(result, d)):
+            if d_item == result_item:
+                merged.append(result_item)
+            elif d_item == (0, 1):  # numpy broadcasting: extent 1 stretches
+                merged.append(result_item)
+            elif result_item == (0, 1):
+                merged.append(d_item)
+            else:
+                raise ValueError(
+                    f"domain mismatch at axis {ax}: {result_item} vs {d_item}"
+                )
+        return tuple(merged)
 
     @staticmethod
     def _binary(inputs, fwd, rev, self):
@@ -642,10 +656,26 @@ class Pair:
         if merged is not None:
             formula_a = Pair._shift_axes(formula_a, bounds_a, len(merged))
             formula_b = Pair._shift_axes(formula_b, bounds_b, len(merged))
+            formula_a = Pair._pin_ones(formula_a, bounds_a, merged)
+            formula_b = Pair._pin_ones(formula_b, bounds_b, merged)
         if bridge:
             formula_a = Pair._bridge_numeric(formula_a)
             formula_b = Pair._bridge_numeric(formula_b)
         return formula_a, formula_b, merged
+
+    @staticmethod
+    def _pin_ones(formula, bounds, merged):
+        """A broadcast extent-1 axis has one valid index: after axis
+        alignment its letter reads 0, whatever the merged extent is."""
+        if bounds is None:
+            return formula
+        offset = len(merged) - len(bounds)
+        subs = {}
+        for ax, (lo, hi) in enumerate(bounds):
+            m_lo, m_hi = merged[ax + offset]
+            if hi - lo == 1 and m_hi - m_lo != 1:
+                subs[axis_idx(ax + offset)] = sympy.Integer(0)
+        return formula.subs(subs, simultaneous=True) if subs else formula
 
     def _remap(self, value, index_map, axis_bounds):
         """Implements infrastructure for array methods where
@@ -1073,6 +1103,8 @@ class Pair:
             raise NotImplementedError(
                 "arrays beyond 5D are not supported.",
             )
+        if value.ndim == 0:
+            return cls(value[()], sympy.Symbol(name, real=True))
         idxs = tuple([axis_idx(idx) for idx in range(value.ndim)])
         formula = sympy.IndexedBase(name)[idxs]
         return cls(value, formula, domain=tuple((0, s) for s in value.shape))

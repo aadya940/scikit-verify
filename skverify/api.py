@@ -18,7 +18,14 @@ def to_sympy(fn, *args):
     (an ``n=``, an ``axis=``), not mathematics.
     Returns the traced result: ``.formula``, ``.value``, ``.domain``.
     """
+    import sys
+
     from .instrument import instrument
+
+    # scatter formulas nest one Piecewise per element write; sympy
+    # recurses per level, so real-size traces need headroom
+    if sys.getrecursionlimit() < 20000:
+        sys.setrecursionlimit(20000)
 
     wrapped = [_wrap(name, val) for name, val in _infer_names(fn, args)]
     _GUARDS.clear()

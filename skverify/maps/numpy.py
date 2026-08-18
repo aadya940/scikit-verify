@@ -338,6 +338,25 @@ def _any(a, axis=None, **kwargs):
     return Pair(np.any(a.value), sympy.Gt(_count(a).formula, 0), None, steps=(a,))
 
 
+# closeness/finiteness are validation checks on the concrete lane,
+# not mathematics: they return plain numpy results
+def _concrete_check(np_fn):
+    def check(*args, **kwargs):
+        vals = [
+            np.asarray(Pair._value_of(a), dtype=float)
+            if isinstance(a, Pair)
+            or (isinstance(a, np.ndarray) and a.dtype == object)
+            else a
+            for a in args
+        ]
+        return np_fn(*vals, **kwargs)
+
+    return check
+
+
+FUNCTION_TABLE[np.allclose] = _concrete_check(np.allclose)
+FUNCTION_TABLE[np.isclose] = _concrete_check(np.isclose)
+
 FUNCTION_TABLE[np.sum] = _sum
 FUNCTION_TABLE[np.clip] = lambda a, lo, hi, **kw: _np_clip(a, lo, hi)
 FUNCTION_TABLE[np.all] = _all
