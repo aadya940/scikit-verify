@@ -88,3 +88,60 @@ def centered(obj, at=0):
     if shifted == sorted(-v for v in shifted):
         return Evidence(PROVEN, "offset symmetry", shifted)
     return Evidence(REFUTED, "offset symmetry", shifted)
+
+
+def _scatter_positions(formula):
+    """Concrete (row, col) writes read off a 2-D scatter formula.
+    Returns None when the formula is not a concrete scatter."""
+    from .helpers import axis_idx
+
+    i, j = axis_idx(0), axis_idx(1)
+    positions = []
+    stack = [formula]
+    while stack:
+        f = stack.pop()
+        if f == 0 or f == sympy.Integer(0):
+            continue
+        if isinstance(f, sympy.Piecewise):
+            for expr, cond in f.args:
+                if cond is sympy.true:
+                    stack.append(expr)
+                    continue
+                eqs = cond.args if isinstance(cond, sympy.And) else (cond,)
+                pos = {}
+                ok = True
+                for eq in eqs:
+                    if (
+                        isinstance(eq, sympy.Eq)
+                        and eq.lhs in (i, j)
+                        and eq.rhs.is_Integer
+                    ):
+                        pos[eq.lhs] = int(eq.rhs)
+                    else:
+                        ok = False
+                if ok and i in pos and j in pos:
+                    positions.append((pos[i], pos[j]))
+                else:
+                    return None
+            continue
+        return None  # a base layer that is not zero: unknown reach
+    return positions
+
+
+def banded(obj):
+    """Is the traced 2-D array banded, and with what widths?
+
+    The claim is read off the FORMULA's write conditions -- every
+    position the scatter can touch -- not off the values, so it is a
+    structural fact about the computation, proven for this trace."""
+    formula = _formula(obj)
+    positions = _scatter_positions(formula)
+    if positions is None:
+        return Evidence(UNKNOWN, "structure", "not a concrete scatter")
+    if not positions:
+        return Evidence(PROVEN, "structure", "zero matrix (band 0, 0)")
+    kl = max((r - c for r, c in positions), default=0)
+    ku = max((c - r for r, c in positions), default=0)
+    return Evidence(
+        PROVEN, "structure", f"banded ({max(kl, 0)}, {max(ku, 0)})"
+    )

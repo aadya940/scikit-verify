@@ -106,3 +106,36 @@ class TestChecksOnRealKernels:
 
         out = to_sympy(walk_step, np.full((6, 6), 1 / 36), 0.1, 0.1, 0.1, 0.1)
         assert checks.conserves_mass(out).verdict == checks.PROVEN
+
+
+class TestBanded:
+    def _tridiagonal(self):
+        # a traced allocation: formula 0, like the instrument twin makes
+        a = Pair(np.zeros((5, 5)), sympy.Integer(0), ((0, 5), (0, 5)))
+        v = Pair.array("v", np.arange(25.0).reshape(5, 5))
+        for i in range(5):
+            for j in range(max(0, i - 1), min(5, i + 2)):
+                a[i, j] = v[i, j]
+        return a
+
+    def test_tridiagonal_proven(self):
+        from skverify.checks import banded
+
+        ev = banded(self._tridiagonal())
+        assert ev.verdict == "proven"
+        assert ev.detail == "banded (1, 1)"
+
+    def test_off_band_write_widens_claim(self):
+        from skverify.checks import banded
+
+        a = self._tridiagonal()
+        a[0, 4] = 7.0
+        ev = banded(a)
+        assert ev.verdict == "proven"
+        assert ev.detail == "banded (1, 4)"  # the claim follows the writes
+
+    def test_non_scatter_is_unknown(self):
+        from skverify.checks import banded
+
+        u = Pair.array("u", np.arange(6.0).reshape(2, 3))
+        assert banded(u).verdict == "unknown"
