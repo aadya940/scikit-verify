@@ -17,7 +17,7 @@ def _register():
         "gammaln": "loggamma",
         "psi": "digamma",
         "erfinv": "erfinv",
-        "erfcinv": "erfcinv",
+        # erfcinv: sympy 1.14 has the symbol but no numeric evalf
         "eval_legendre": "legendre",
         "eval_chebyt": "chebyshevt",
         "eval_chebyu": "chebyshevu",
