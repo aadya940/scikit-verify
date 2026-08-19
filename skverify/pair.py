@@ -1036,8 +1036,14 @@ class Pair:
         return self.reshape(np.squeeze(np.asarray(self.value), axis=axis).shape)
 
     def astype(self, dtype=None, copy=True, **kwargs):
-        # float cast is math-neutral; a real reinterpretation would lie
+        # float casts are math-neutral. Integer casts are LABEL
+        # bookkeeping when the values are already integral (0/1 class
+        # arrays through classification metrics); truncation of
+        # non-integral values would change the math and refuses.
         if dtype is not None and np.dtype(dtype).kind not in "fc":
+            vals = np.asarray(Pair._value_of(self.value))
+            if np.dtype(dtype).kind in "iu" and np.all(vals == np.floor(vals)):
+                return Pair(self.value, self.formula, self._axis_bounds, steps=(self,))
             raise NotImplementedError("astype to non-float would change the math")
         return Pair(self.value, self.formula, self._axis_bounds, steps=(self,))
 

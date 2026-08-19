@@ -101,7 +101,10 @@ def _skv_method(name, obj, *args, **kwargs):
     if name == "astype":
         dtype = args[0] if args else kwargs.get("dtype")
         if dtype is not None and np.dtype(dtype).kind not in "fc":
-            raise NotImplementedError("astype to non-float would change the math")
+            vals = np.asarray(Pair._value_of(obj.value))
+            integral = np.dtype(dtype).kind in "iub" and np.all(vals == np.floor(vals))
+            if not integral:
+                raise NotImplementedError("astype to non-float would change the math")
         return Pair(obj.value, obj.formula, obj._axis_bounds, steps=(obj,))
     if name == "toarray":
         return Pair(

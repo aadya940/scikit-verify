@@ -590,6 +590,14 @@ def _average(a, axis=None, weights=None, **kwargs):
 
 
 FUNCTION_TABLE[np.average] = _average
+def _unique(ar, **kwargs):
+    # which distinct values exist is a fact about THIS trace (label
+    # sets, category counts): bookkeeping, not mathematics. Runs on
+    # concrete values; downstream label handling gets plain numbers.
+    return np.unique(np.asarray(Pair._value_of(ar), dtype=float), **kwargs)
+
+
+FUNCTION_TABLE[np.unique] = _unique
 FUNCTION_TABLE[np.median] = _median
 FUNCTION_TABLE[np.mean] = _mean
 FUNCTION_TABLE[np.var] = _var
