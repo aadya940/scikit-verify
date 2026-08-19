@@ -17,7 +17,7 @@ import numpy as np
 
 from ..pair import Pair
 from ..session import current as _session
-from .registries import OPAQUE_CALLABLES
+from .registries import CONCRETE_BY_NAME, OPAQUE_CALLABLES
 
 # The instrumented-function cache is the session's (blank per trace).
 _FN_MEMO = _session.fn_twins
@@ -60,6 +60,22 @@ def _skv_maybe(fn):
     cannot dodge them."""
     if getattr(fn, "__name__", None) in OPAQUE_CALLABLES:
         return _skv_opaque(fn)
+    if getattr(fn, "__name__", None) in CONCRETE_BY_NAME:
+        # inventory routines run on concrete values: their results are
+        # facts about this trace, and their bodies (sorting, boolean
+        # index tricks) are hostile to traced operands
+        def concrete_inventory(*args, **kwargs):
+            vals = [
+                np.asarray(Pair._value_of(a), dtype=float)
+                if _traced(a) or (
+                    isinstance(a, np.ndarray) and a.dtype == object
+                )
+                else a
+                for a in args
+            ]
+            return fn(*vals, **kwargs)
+
+        return concrete_inventory
     if inspect.isbuiltin(fn) and not isinstance(
         getattr(fn, "__self__", None), (np.ndarray, Pair, type(np))
     ):

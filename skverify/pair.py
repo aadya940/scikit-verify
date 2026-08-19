@@ -1568,4 +1568,18 @@ def _invert(self):
 Pair.__invert__ = _invert
 Pair.all = lambda self, axis=None: np.all(self, axis=axis)
 Pair.any = lambda self, axis=None: np.any(self, axis=axis)
-Pair.__hash__ = None  # elementwise __eq__ (numpy semantics): unhashable, like ndarray
+def _pair_hash(self):
+    """Bucket by concrete value so dicts and sets of traced scalars
+    work (label -> index maps). The identity decision is disclosed
+    once per trace via the session's hashed-values record, not as
+    per-comparison guards -- one readable line instead of n^2.
+    Array Pairs stay unhashable, like ndarrays."""
+    if isinstance(self.value, np.ndarray) and self.value.ndim:
+        raise TypeError("unhashable: array Pair (like ndarray)")
+    v = self.value.item() if hasattr(self.value, "item") else self.value
+    key = (str(self.formula), float(v))
+    _session.hashed.add(key)
+    return hash(v)
+
+
+Pair.__hash__ = _pair_hash  # elementwise __eq__ (numpy semantics): unhashable, like ndarray

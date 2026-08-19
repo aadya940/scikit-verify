@@ -45,6 +45,10 @@ SCALARIZE = {"float", "int"}  # scalar coercion at a compiled boundary
 # compiled lookups whose result is bookkeeping (an interval index),
 # not mathematics: run on values, return the plain result
 CONCRETE_CALLABLES = {"find_interval"}
+# numpy set-routines: which values exist / where they appear are facts
+# about THIS trace (label inventories), not mathematics -- run on
+# concrete values wherever the call resolves, body or dispatcher
+CONCRETE_BY_NAME = {"in1d", "_in1d", "setdiff1d", "union1d", "intersect1d", "isin", "unique"}
 # compiled routines that RETURN through array out-parameters (scipy's
 # Cython convention); value = argument positions of the out arrays
 OPAQUE_OUT = {"_coloc": (3,), "qr_reduce": (0, 3)}

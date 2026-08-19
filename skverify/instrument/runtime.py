@@ -200,11 +200,9 @@ def _skv_set(iterable=()):
     items = list(iterable)
     if not any(isinstance(e, Pair) for e in items):
         return set(items)
-    kept = []
-    for e in items:
-        if not any(e == k for k in kept):
-            kept.append(e)
-    return kept
+    from ..sets import TracedSet
+
+    return TracedSet(items)
 
 
 def _skv_isinstance(obj, types):

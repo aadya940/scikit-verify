@@ -82,7 +82,19 @@ def to_sympy(fn, *args, **kwargs):
         # Attached to whatever came back -- a Pair, or a library object
         # (BSpline) whose attributes carry the traced Pairs
         out.preconditions = sympy.And(*_GUARDS) if _GUARDS else sympy.true
-        out.unchecked = tuple(_OPAQUE)
+        records = list(_OPAQUE)
+        if _session.hashed:
+            # traced values used as identities (dict keys, set members):
+            # ONE disclosed line, not n^2 equality guards
+            shown = sorted(_session.hashed)[:64]
+            records.append(
+                (
+                    "used_as_identity",
+                    (("identity", "concrete"),),
+                    ("hashed values", "; ".join(f"{f} = {v}" for f, v in shown)),
+                )
+            )
+        out.unchecked = tuple(records)
         out.instrumented = sites
     except (AttributeError, TypeError):
         pass  # slots-only/immutable results keep their trace in skverify.pair._OPAQUE
