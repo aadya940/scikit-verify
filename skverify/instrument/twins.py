@@ -9,6 +9,7 @@ Caches live on the active TraceSession, so no twin outlives a trace's
 assumptions.
 """
 
+import __future__
 import ast
 import inspect
 import textwrap
@@ -212,7 +213,17 @@ def _instrument(fn, depth, seen, extra=None):
                     namespace[name] = sub
                     sites.extend(f"{name}: {s}" for s in sub_sites)
 
-    code = compile(tree, filename=f"<instrumented {fn.__name__}>", mode="exec")
+    # Compile under PEP 563 (string annotations): source modules often
+    # guard annotation-only names behind TYPE_CHECKING, and evaluating
+    # them at re-exec time raises NameError on Pythons where
+    # annotations are eager (3.11/3.12). We never introspect a twin's
+    # annotations, so lazy strings are always safe.
+    code = compile(
+        tree,
+        filename=f"<instrumented {fn.__name__}>",
+        mode="exec",
+        flags=__future__.annotations.compiler_flag,
+    )
     exec(code, namespace)
     return namespace[fdef.name], tuple(sites)
 
