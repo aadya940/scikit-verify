@@ -101,6 +101,39 @@ def _skv_maybe(fn):
             if sub is not inner:
                 return sub.__get__(fn.__self__)
         return fn
+    if inspect.isfunction(fn) and getattr(fn, "__closure__", None):
+        # a decorated function (validate_params-style): peel the
+        # wrapper chain to the plain inner function and triage THAT --
+        # the same treatment the static callee path gives decorators
+        inner = fn
+        while getattr(inner, "__wrapped__", None) is not None:
+            inner = inner.__wrapped__
+        if (
+            inner is not fn
+            and inspect.isfunction(inner)
+            and not getattr(inner, "__closure__", None)
+            and _twinnable(inner)
+        ):
+            sub = runtime_twin(inner)
+            if sub is not inner:
+                wrapper = fn
+
+                def peeled(*args, **kwargs):
+                    # some wrappers INJECT arguments (sklearn's device
+                    # shims pass xp): a signature mismatch on the
+                    # peeled inner means the wrapper was load-bearing;
+                    # fall back to it untouched
+                    try:
+                        return sub(*args, **kwargs)
+                    except TypeError as e:
+                        if "required positional argument" in str(e) or (
+                            "required keyword-only argument" in str(e)
+                        ):
+                            return wrapper(*args, **kwargs)
+                        raise
+
+                return peeled
+            return fn
     if inspect.isfunction(fn) and not getattr(fn, "__closure__", None):
         if _twinnable(fn) and "__skv" not in fn.__name__:
             if fn in _FN_MEMO:
