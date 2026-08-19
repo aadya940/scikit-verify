@@ -23,25 +23,67 @@ def _formula(obj):
     return obj.formula if isinstance(obj, Pair) else sympy.sympify(obj)
 
 
+def _rung_canonical(residual):
+    """Cheapest rung: canonical form already decides many identities."""
+    if residual == 0:
+        return Evidence(PROVEN, "canonical", 0), residual
+    return None, residual
+
+
+def _rung_simplify(residual):
+    """Full simplification: slower, decides most textbook rewrites."""
+    residual = sympy.simplify(residual)
+    if residual == 0:
+        return Evidence(PROVEN, "simplify", 0), residual
+    return None, residual
+
+
+def _rung_classify(residual):
+    """Terminal rung: name the disagreement or admit not knowing.
+
+    A nonzero constant or a residual with surviving indexed terms is a
+    refutation whose detail localizes the difference; anything sympy
+    could neither cancel nor pin down stays honestly unknown.
+    """
+    if residual.is_number and residual != 0:
+        return Evidence(REFUTED, "canonical", residual), residual
+    if not residual.free_symbols:
+        return Evidence(REFUTED, "canonical", residual), residual
+    if residual.atoms(sympy.Indexed) or residual.atoms(sympy.Symbol):
+        return Evidence(REFUTED, "residual", residual), residual
+    return Evidence(UNKNOWN, "simplify", residual), residual
+
+
+# The equivalence ladder, cheapest first. A verdict from an earlier
+# rung is final; later rungs only run when earlier ones cannot decide.
+# Extension point: a randomized-evaluation rung (probabilistic
+# equality at rational sample points) inserts before _rung_classify.
+_LADDER = [_rung_canonical, _rung_simplify, _rung_classify]
+
+
 def against(obj, reference):
     """Is the lifted formula equivalent to the reference expression?
 
-    Decided by canonical difference; the residual names where they part.
+    Parameters
+    ----------
+    obj : Pair or sympy.Expr
+        The traced result (its formula is compared).
+    reference : sympy.Expr or str
+        The expression the code is claimed to implement.
+
+    Returns
+    -------
+    Evidence
+        ``proven`` / ``refuted`` / ``unknown``, with the deciding
+        method named and the residual localizing any disagreement.
     """
     diff = _formula(obj) - sympy.sympify(reference)
     residual = sympy.expand(diff.doit() if diff.has(sympy.Sum) else diff)
-    if residual == 0:
-        return Evidence(PROVEN, "canonical", 0)
-    residual = sympy.simplify(residual)
-    if residual == 0:
-        return Evidence(PROVEN, "simplify", 0)
-    if residual.is_number and residual != 0:
-        return Evidence(REFUTED, "canonical", residual)
-    if not residual.free_symbols:
-        return Evidence(REFUTED, "canonical", residual)
-    if residual.atoms(sympy.Indexed) or residual.atoms(sympy.Symbol):
-        return Evidence(REFUTED, "residual", residual)
-    return Evidence(UNKNOWN, "simplify", residual)
+    for rung in _LADDER:
+        verdict, residual = rung(residual)
+        if verdict is not None:
+            return verdict
+    return Evidence(UNKNOWN, "ladder", residual)
 
 
 def conserves_mass(obj):
