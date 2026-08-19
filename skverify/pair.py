@@ -515,45 +515,10 @@ class Pair:
 
     @staticmethod
     def _formula_of(x):
-        if isinstance(x, Pair):
-            return x.formula
-        if isinstance(x, np.ndarray):
-            if x.dtype == object:
-                elems = x.ravel()
-                if all(isinstance(e, Pair) for e in elems):
-                    formulas = [e.formula for e in elems]
-                    if len(set(formulas)) == 1:
-                        # keepdims mean and friends: one scalar in a box
-                        return formulas[0]
-                    from .api import _recompress
+        """Symbolic content of any operand; delegates to skverify.coercion."""
+        from .coercion import formula_of
 
-                    rule = _recompress(formulas)
-                    if rule is not None:
-                        return rule
-                    raise NotImplementedError(
-                        "decompressed operand without a provable pattern"
-                    )
-            vals = np.unique(x)
-            if len(vals) == 1:  # uniform: zeros, ones, full
-                return sympy.sympify(vals.item())  # constant field, clean
-            if x.dtype.kind in "fiub" and x.size <= 4096:
-                # a concrete operand (filter kernels, weights): a named
-                # table, values disclosed -- same treatment as gathers
-                name = f"const_{len(_OPAQUE)}"
-                table = sympy.IndexedBase(name)
-                letters = tuple(axis_idx(ax) for ax in range(x.ndim))
-                _OPAQUE.append(
-                    (
-                        name,
-                        (("table", "concrete"),),
-                        (str(table[letters]), f"{name} = {x.tolist()}"),
-                    )
-                )
-                return table[letters]
-            raise NotImplementedError(
-                "raw non-uniform ndarray operand, wrap it: Pair.array(name, x)"
-            )
-        return sympy.sympify(x)
+        return formula_of(x)
 
     @staticmethod
     def _domain_of(x):
@@ -627,29 +592,17 @@ class Pair:
 
     @staticmethod
     def _numeric(v, copy=True):
-        """Object-dtype numeric arrays coerce to float (the dtype duck
-        leaks into allocations); anything else passes through."""
-        if isinstance(v, np.ndarray):
-            if v.dtype == object:
-                try:
-                    return np.asarray(v, dtype=float)
-                except (TypeError, ValueError):
-                    pass
-            return np.array(v, copy=True) if copy else v
-        return v
+        """Plain-number object arrays -> float; delegates to skverify.coercion."""
+        from .coercion import numeric
+
+        return numeric(v, copy=copy)
 
     @staticmethod
     def _value_of(x):
-        if isinstance(x, Pair):
-            return x.value
-        if isinstance(x, np.ndarray) and x.dtype == object:
-            elems = x.ravel()
-            if any(isinstance(e, Pair) for e in elems):
-                vals = [e.value if isinstance(e, Pair) else e for e in elems]
-                return np.array(vals, dtype=float).reshape(x.shape)
-        if isinstance(x, (list, tuple)) and any(isinstance(e, Pair) for e in x):
-            return type(x)(Pair._value_of(e) for e in x)
-        return x
+        """Concrete numeric content; delegates to skverify.coercion."""
+        from .coercion import value_of
+
+        return value_of(x)
 
     @staticmethod
     def _shift_axes(formula, bounds, ndim):
