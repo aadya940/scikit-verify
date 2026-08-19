@@ -28,11 +28,13 @@ def _bounds_of(shape):
 
 
 def _skv_zeros(shape, dtype=None, *args, **kwargs):
-    return Pair(np.zeros(shape), sympy.Integer(0), _bounds_of(shape))
+    # the value lane honors the requested dtype (bool masks, int
+    # counters); the formula is 0 regardless
+    return Pair(np.zeros(shape, dtype=dtype), sympy.Integer(0), _bounds_of(shape))
 
 
 def _skv_ones(shape, dtype=None, *args, **kwargs):
-    return Pair(np.ones(shape), sympy.Integer(1), _bounds_of(shape))
+    return Pair(np.ones(shape, dtype=dtype), sympy.Integer(1), _bounds_of(shape))
 
 
 def _skv_full(shape, fill, dtype=None, *args, **kwargs):
@@ -47,7 +49,11 @@ def _skv_full(shape, fill, dtype=None, *args, **kwargs):
 def _skv_empty(shape, dtype=None, *args, **kwargs):
     bounds = _bounds_of(shape)
     letters = tuple(axis_idx(ax) for ax in range(len(bounds)))
-    return Pair(np.empty(shape), sympy.Function("uninitialized")(*letters), bounds)
+    return Pair(
+        np.empty(shape, dtype=dtype),
+        sympy.Function("uninitialized")(*letters),
+        bounds,
+    )
 
 
 def _skv_neutral(a, dtype=None, **kwargs):
@@ -100,12 +106,7 @@ def _skv_method(name, obj, *args, **kwargs):
         return Pair(obj.value, obj.formula, obj._axis_bounds, steps=(obj,))
     if name == "astype":
         dtype = args[0] if args else kwargs.get("dtype")
-        if dtype is not None and np.dtype(dtype).kind not in "fc":
-            vals = np.asarray(Pair._value_of(obj.value))
-            integral = np.dtype(dtype).kind in "iub" and np.all(vals == np.floor(vals))
-            if not integral:
-                raise NotImplementedError("astype to non-float would change the math")
-        return Pair(obj.value, obj.formula, obj._axis_bounds, steps=(obj,))
+        return obj.astype(dtype)
     if name == "toarray":
         return Pair(
             np.asarray(obj.value.toarray()),
@@ -176,6 +177,34 @@ def _skv_scalarize(kind, x):
     if v.ndim and v.size == 1:
         return kind(v.item())  # numpy 2 forbids float() on size-1 arrays
     return kind(Pair._value_of(x))
+
+
+def _skv_set(iterable=()):
+    """Guarded set: dedup traced scalars by == (guards recorded).
+
+    Parameters
+    ----------
+    iterable : iterable
+        Elements. Plain values build a real ``set``; traced elements
+        dedup through Pair's guarded equality, so every merge decision
+        lands in the trace's preconditions and the resulting control
+        flow matches the untraced run exactly.
+
+    Returns
+    -------
+    set or list
+        A real set for plain elements; an order-preserving deduped
+        list when traced elements are present (list supports the
+        same iteration/len/membership uses downstream code makes).
+    """
+    items = list(iterable)
+    if not any(isinstance(e, Pair) for e in items):
+        return set(items)
+    kept = []
+    for e in items:
+        if not any(e == k for k in kept):
+            kept.append(e)
+    return kept
 
 
 def _skv_isinstance(obj, types):

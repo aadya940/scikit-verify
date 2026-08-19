@@ -1040,12 +1040,18 @@ class Pair:
         # bookkeeping when the values are already integral (0/1 class
         # arrays through classification metrics); truncation of
         # non-integral values would change the math and refuses.
+        vals = np.asarray(Pair._value_of(self.value))
         if dtype is not None and np.dtype(dtype).kind not in "fc":
-            vals = np.asarray(Pair._value_of(self.value))
-            if np.dtype(dtype).kind in "iu" and np.all(vals == np.floor(vals)):
-                return Pair(self.value, self.formula, self._axis_bounds, steps=(self,))
+            if np.dtype(dtype).kind in "iub" and np.all(vals == np.floor(vals)):
+                # label cast: formula unchanged, but the VALUE LANE must
+                # really convert -- downstream bool/bitwise code depends
+                # on the actual dtype
+                return Pair(
+                    vals.astype(dtype), self.formula, self._axis_bounds, steps=(self,)
+                )
             raise NotImplementedError("astype to non-float would change the math")
-        return Pair(self.value, self.formula, self._axis_bounds, steps=(self,))
+        value = vals.astype(dtype) if dtype is not None and vals.ndim else self.value
+        return Pair(value, self.formula, self._axis_bounds, steps=(self,))
 
     @property
     def device(self):
@@ -1520,6 +1526,15 @@ def _make_binary(np_op, sy_op, bridge):
         # NaN inside an operand (zero-scale placeholders) makes the
         # ctor's piecewise_fold rebuild a relational against nan
         hazard = hazard or mine.has(sympy.nan) or theirs.has(sympy.nan)
+        if not bridge:
+            # mask combinators (& | ^): a NUMERIC operand (a 0/1 label
+            # array through astype) is a mask spelled as numbers; the
+            # inverse bridge Ne(f, 0) makes it the condition sympy's
+            # And/Or require
+            if not Pair._is_condition(mine):
+                mine = sympy.Ne(mine, 0)
+            if not Pair._is_condition(theirs):
+                theirs = sympy.Ne(theirs, 0)
         if bridge and hazard:
             formula = sy_op(mine, theirs, evaluate=False)
         else:

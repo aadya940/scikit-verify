@@ -142,6 +142,9 @@ class _Rewriter(ast.NodeTransformer):
                 args=[ast.Constant(value=name)] + node.args,
                 keywords=node.keywords,
             )
+        elif name == "set" and isinstance(node.func, ast.Name) and len(node.args) <= 1:
+            self.sites.append("set -> guarded dedup")
+            node.func = ast.Name(id="__skv_set__", ctx=ast.Load())
         elif name == "isinstance" and isinstance(node.func, ast.Name):
             self.sites.append("isinstance -> Pair counts as ndarray")
             node.func = ast.Name(id="__skv_isinstance__", ctx=ast.Load())

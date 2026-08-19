@@ -597,6 +597,25 @@ def _unique(ar, **kwargs):
     return np.unique(np.asarray(Pair._value_of(ar), dtype=float), **kwargs)
 
 
+def _concrete_inventory(np_fn):
+    # membership and set-difference over label inventories: facts about
+    # THIS trace, not mathematics (same doctrine as np.unique)
+    def entry(*args, **kwargs):
+        vals = [
+            np.asarray(Pair._value_of(a), dtype=float)
+            if not np.isscalar(a)
+            else a
+            for a in args
+        ]
+        return np_fn(*vals, **kwargs)
+
+    return entry
+
+
+FUNCTION_TABLE[np.isin] = _concrete_inventory(np.isin)
+FUNCTION_TABLE[np.setdiff1d] = _concrete_inventory(np.setdiff1d)
+FUNCTION_TABLE[np.union1d] = _concrete_inventory(np.union1d)
+FUNCTION_TABLE[np.intersect1d] = _concrete_inventory(np.intersect1d)
 FUNCTION_TABLE[np.unique] = _unique
 FUNCTION_TABLE[np.median] = _median
 FUNCTION_TABLE[np.mean] = _mean
