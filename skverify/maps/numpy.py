@@ -107,6 +107,61 @@ def _where(cond, a=None, b=None):
     )
 
 
+def _held_sum(body, *limits):
+    """Construct ``Sum(body, *limits)`` without hoisting re-evaluation.
+
+    ``Sum.__new__`` runs ``piecewise_fold`` on the body, masking only
+    Piecewise terms free of the NEW binder. A Piecewise whose condition
+    references an INNER sum's bound variable passes that guard and gets
+    hoisted through its own binder: the condition escapes and the
+    formula is silently wrong (upstream sympy bug, caught by the
+    two-lane fuzzer). For that hazardous shape the Sum is assembled by
+    direct ``Expr.__new__``, skipping the constructor's preprocessing;
+    everything else uses the normal constructor.
+    """
+    if body.has(sympy.Piecewise) and body.has(sympy.Sum):
+        # Selector sums -- an inner Sum whose Piecewise conditions on
+        # the inner sum's OWN dummy (Eq(k, 1) selectors from pinv-style
+        # code) -- resolve exactly by unrolling: each term's condition
+        # becomes concrete and collapses. Resolving them here removes
+        # the shape sympy's ctor would corrupt.
+        resolutions = {}
+        for inner in body.atoms(sympy.Sum):
+            dummies = {lim[0] for lim in inner.limits}
+            if any(
+                pw.has(*dummies)
+                for pw in inner.function.atoms(sympy.Piecewise)
+            ):
+                try:
+                    resolved = inner.doit()
+                except Exception:
+                    continue
+                if not resolved.has(sympy.Piecewise):
+                    resolutions[inner] = resolved
+        if resolutions:
+            body = body.xreplace(resolutions)
+    built = sympy.Sum(body, *limits)
+    if body.has(sympy.Piecewise) and body.has(sympy.Sum):
+        # The precise corruption test: a hoist is only WRONG when it
+        # frees a symbol that the input had bound (the condition
+        # escaped its binder). Benign folds keep the free-symbol set.
+        binders = {lim[0] for lim in built.limits} if hasattr(built, "limits") else set()
+        expected_free = body.free_symbols - {l[0] for l in limits}
+        escaped = (built.free_symbols | binders) - expected_free - {l[0] for l in limits}
+        escaped = {e for e in escaped if e in built.free_symbols and e not in expected_free}
+        if escaped:
+            # a correct Sum could be BUILT by bypassing the ctor, but any
+            # later doit/simplify re-runs the fold and corrupts it in the
+            # user's hands. Refusal is the only safe output.
+            raise NotImplementedError(
+                "summing over a Piecewise bound inside an inner Sum: sympy's "
+                f"piecewise_fold frees {sorted(map(str, escaped))} through "
+                "its binder (upstream bug); restructure so the mask applies "
+                "before the inner reduction"
+            )
+    return built
+
+
 def _fresh_dummy(formula, n_axes, base="j"):
     """A summation dummy not colliding with any symbol already in the
     formula -- sum(sum(u, axis=0)) must not capture the inner Sum's j.
@@ -153,7 +208,7 @@ def _sum(a, axis=None, **kwargs):
             {axis_idx(ax): axis_idx(ax - 1) for ax in range(k + 1, len(bounds))}
         )
         lo, hi = bounds[k]
-        formula = sympy.Sum(a.formula.subs(rename, simultaneous=True), (j, lo, hi - 1))
+        formula = _held_sum(a.formula.xreplace(rename), (j, lo, hi - 1))
         new_bounds = bounds[:k] + bounds[k + 1 :]
         return Pair(
             np.sum(a.value, axis=k),
@@ -172,12 +227,12 @@ def _sum(a, axis=None, **kwargs):
             _fresh_dummy(a.formula, len(bounds), base=f"j{ax}")
             for ax in range(len(bounds))
         ]
-    formula = a.formula.subs(
-        {axis_idx(ax): d for ax, d in enumerate(dummies)}, simultaneous=True
+    formula = a.formula.xreplace(
+        {axis_idx(ax): d for ax, d in enumerate(dummies)}
     )
     for ax in reversed(range(len(bounds))):
         lo, hi = bounds[ax]
-        formula = sympy.Sum(formula, (dummies[ax], lo, hi - 1))  # inclusive
+        formula = _held_sum(formula, (dummies[ax], lo, hi - 1))  # inclusive
     return Pair(np.sum(a.value), formula, None, steps=(a,))
 
 
@@ -236,8 +291,8 @@ def _matmul(a, b):
         sub_b[axis_idx(0)] = k
 
     lo, hi = bounds_a[na - 1]
-    formula = sympy.Sum(
-        fa.subs(sub_a, simultaneous=True) * fb.subs(sub_b, simultaneous=True),
+    formula = _held_sum(
+        fa.xreplace(sub_a) * fb.xreplace(sub_b),
         (k, 0, hi - lo - 1),
     )
     return Pair(value, formula, res_bounds or None, steps=Pair._steps_of(a, b))
