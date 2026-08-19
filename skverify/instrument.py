@@ -834,8 +834,12 @@ def _instrument(fn, depth, seen, extra=None):
     return namespace[fdef.name], tuple(sites)
 
 
-_CLASS_TWINS = {}
-_FN_MEMO = {}  # instrumented-callee reuse across namespaces (class methods)
+from .session import current as _session
+
+# Historical aliases: the session owns the twin caches, so every trace
+# starts with blank ones (order-independence by construction).
+_CLASS_TWINS = _session.class_twins
+_FN_MEMO = _session.fn_twins
 
 
 def _instrument_class(C, depth, seen):

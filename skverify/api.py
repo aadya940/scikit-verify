@@ -5,7 +5,8 @@ import inspect
 import numpy as np
 import sympy
 
-from .pair import _GUARDS, _LOOP_EVENTS, _LOOP_STACK, _OPAQUE, Pair
+from .pair import _GUARDS, _OPAQUE, Pair
+from .session import current as _session
 from .helpers import axis_idx
 
 
@@ -37,10 +38,7 @@ def to_sympy(fn, *args, **kwargs):
         _wrap(name, val)
         for name, val in _infer_names(fn, args[: len(args) - len(kw_wrapped)])
     ]
-    _GUARDS.clear()
-    _OPAQUE.clear()
-    _LOOP_EVENTS.clear()
-    _LOOP_STACK.clear()
+    _session.reset()
     sites = ()
     try:
         out = _repack(fn(*wrapped, **kw_wrapped))
@@ -61,10 +59,7 @@ def to_sympy(fn, *args, **kwargs):
                     "run. Define the function in a .py file or notebook cell."
                 ) from sys.exc_info()[1]
             raise
-        _GUARDS.clear()
-        _OPAQUE.clear()
-        _LOOP_EVENTS.clear()
-        _LOOP_STACK.clear()
+        _session.reset()
         out = _repack(fn_run(*wrapped, **kw_wrapped))
         if any("decorator unwrapped" in site for site in sites):
             # names propose, runs dispose: the wrapper must have been

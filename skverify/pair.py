@@ -13,16 +13,15 @@ from .helpers import (
 
 IDX = axis_idx(0)  # `i`
 
-_GUARDS = []  # branch conditions taken during a trace; harvested by to_sympy
-_OPAQUE = []  # opaque compiled calls made during a trace, with contract verdicts
+from .session import current as _session
 
-# loop provenance: instrumented for/while loops log (watermark, stack)
-# events; a Pair created after an event belongs to that loop context.
-# The grammar of the derivation comes from the program's AST, not from
-# pattern-mining the trace.
-_SEQ_N = 0
-_LOOP_EVENTS = []  # (seq watermark, context stack tuple of (loop_id, iter))
-_LOOP_STACK = []
+# Historical aliases into the active TraceSession. These are the SAME
+# list objects the session owns (cleared in place, never rebound), so
+# long-standing imports keep observing live trace state.
+_GUARDS = _session.guards
+_OPAQUE = _session.opaque
+_LOOP_EVENTS = _session.loop_events
+_LOOP_STACK = _session.loop_stack
 
 
 def _loop_iter(loop_id):
@@ -30,13 +29,13 @@ def _loop_iter(loop_id):
         _LOOP_STACK[-1][1] += 1
     else:
         _LOOP_STACK.append([loop_id, 0])
-    _LOOP_EVENTS.append((_SEQ_N, tuple((l, i) for l, i in _LOOP_STACK)))
+    _LOOP_EVENTS.append((_session.seq, tuple((l, i) for l, i in _LOOP_STACK)))
 
 
 def _loop_end(loop_id):
     if _LOOP_STACK and _LOOP_STACK[-1][0] == loop_id:
         _LOOP_STACK.pop()
-    _LOOP_EVENTS.append((_SEQ_N, tuple((l, i) for l, i in _LOOP_STACK)))
+    _LOOP_EVENTS.append((_session.seq, tuple((l, i) for l, i in _LOOP_STACK)))
 
 
 def _context_of(seq):
@@ -369,7 +368,6 @@ class Pair:
     """
 
     def __init__(self, value, formula, domain=None, steps=None):
-        global _SEQ_N
         self.value = value  # the real ndarray/scalar, what executes
         self.formula = formula  # the sympy Expr, what it means
         # provenance is a DAG of parent Pairs; .steps flattens it on
@@ -377,8 +375,7 @@ class Pair:
         # different branches produce different steps, because different
         # ops ran.
         self._parents = tuple(steps or ())
-        _SEQ_N += 1
-        self._seq = _SEQ_N  # creation order, keys into the loop event log
+        self._seq = _session.next_seq()  # creation order; keys into the loop event log
 
         if domain is not None and len(domain) == 0:
             domain = None  # 0-d allocation: a scalar
@@ -1011,11 +1008,9 @@ class Pair:
     def _record_write(self, prior_formula, *operands):
         # an in-place write mutates formula; the pre-write state becomes
         # a parent node so the DAG keeps the whole derivation
-        global _SEQ_N
         prior = Pair(self.value, prior_formula, self._axis_bounds, steps=self._parents)
         self._parents = (prior,) + Pair._steps_of(*operands)
-        _SEQ_N += 1
-        self._seq = _SEQ_N  # the write happened NOW; creation seq is stale
+        self._seq = _session.next_seq()  # the write happened NOW; creation seq is stale
 
     def transpose(self, axes=None):
         # u (4x7), u.T: u[i, j] -> u[j, i], bounds ((0,4),(0,7)) -> ((0,7),(0,4))
