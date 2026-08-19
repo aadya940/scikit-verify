@@ -24,7 +24,9 @@ def test_union_intersection_difference():
     b = TracedSet(_elems([2.0, 3.0], "b"))
     u = a | b
     assert u.value == {1.0, 2.0, 3.0}
-    assert isinstance(u.formula, sympy.Union)
+    # sympy merges finite unions eagerly; the four symbols must survive
+    A, B = sympy.IndexedBase("a"), sympy.IndexedBase("b")
+    assert all(e in u.formula.args for e in (A[0], A[1], B[0], B[1]))
     i = a & b
     assert i.value == {2.0}
     assert isinstance(i.formula, sympy.Intersection)
