@@ -111,12 +111,21 @@ pip install git+https://github.com/aadya940/scikit-verify.git
 Requires Python >= 3.11, `numpy`, and `sympy`. The import name is
 `skverify`. Pre-alpha; the API may change.
 
-## Related work
+## Lineage
 
-Conversion of NumPy functions to SymPy was proposed in
-[sympy#2810](https://github.com/sympy/sympy/issues/2810) (2014). Verified
-lifting of stencil computations was developed by Kamil et al. (PLDI 2016)
-for performance portability; scikit-verify applies lifting to correctness.
+The ideas here are old and good. Pairing a concrete execution with a
+symbolic one is King's symbolic execution (CACM 1976), run in the
+concolic style of Cadar and Sen. Checking a compiled routine's answer
+against its defining equation, instead of trusting its name, is
+Blum and Kannan's result checking (1989). Folding a long trace back
+into its loop structure follows Larus's whole-program paths (PLDI
+1999), with templates recovered by Plotkin's anti-unification (1970).
+The stance that code verification means checking code against the
+mathematics it claims to implement is Oberkampf and Roy's (2010).
+Verified lifting of stencils to summaries was developed by Kamil et
+al. (PLDI 2016) for performance; scikit-verify lifts for correctness.
+Converting NumPy to SymPy was wished for in
+[sympy#2810](https://github.com/sympy/sympy/issues/2810) (2014).
 
 ## License
 
