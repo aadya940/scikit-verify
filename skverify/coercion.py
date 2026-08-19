@@ -104,7 +104,10 @@ def formula_of(x):
         vals = np.unique(x)
         if len(vals) == 1:
             # uniform field (zeros, ones, full): one clean constant
-            return sympy.sympify(vals.item())
+            item = vals.item()
+            if isinstance(item, float) and np.isnan(item):
+                return sympy.Symbol("NaN", real=True)
+            return sympy.sympify(item)
         if x.dtype.kind in "fiub" and x.size <= 4096:
             # a concrete operand (filter kernels, weights): a named
             # table with its values disclosed, like gather tables
@@ -122,6 +125,13 @@ def formula_of(x):
         raise NotImplementedError(
             "raw non-uniform ndarray operand, wrap it: Pair.array(name, x)"
         )
+    if isinstance(x, (float, np.floating)) and np.isnan(x):
+        # IEEE NaN is sentinel semantics (empty-slice placeholders),
+        # never mathematics. sympy's S.NaN detonates every relational
+        # fold it later meets; an inert named symbol is honest, prints
+        # as NaN, and only fails evaluation on branches that would
+        # genuinely BE NaN -- where the value lane is NaN too.
+        return sympy.Symbol("NaN", real=True)
     return sympy.sympify(x)
 
 

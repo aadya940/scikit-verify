@@ -98,9 +98,19 @@ def _opaque_call_impl(Pair, func, args, kwargs):
         outs = []
         for pos, res in enumerate(result):
             if isinstance(res, np.ndarray) and res.dtype.kind in "fc":
-                base = sympy.IndexedBase(
-                    f"{fname}_{len(_OPAQUE)}_{pos}"
-                )
+                name = f"{fname}_{len(_OPAQUE)}_{pos}"
+                if res.ndim == 0:
+                    # a 0-d output (a residue, a rank): a scalar atom
+                    outs.append(
+                        Pair(
+                            res,
+                            sympy.Symbol(name, real=True),
+                            None,
+                            steps=Pair._steps_of(*args),
+                        )
+                    )
+                    continue
+                base = sympy.IndexedBase(name)
                 letters = tuple(axis_idx(ax) for ax in range(res.ndim))
                 outs.append(
                     Pair(

@@ -50,6 +50,12 @@ class Pair:
     """
 
     def __init__(self, value, formula, domain=None, steps=None):
+        if formula is sympy.nan or formula is sympy.zoo:
+            # 0/0 and x/0 sentinel arithmetic (incremental-variance
+            # style): the value lane is genuinely nan/inf there, and
+            # sympy's S.NaN detonates every later relational fold. An
+            # inert named symbol carries the same information safely.
+            formula = sympy.Symbol("NaN" if formula is sympy.nan else "zooInf", real=True)
         self.value = value  # the real ndarray/scalar, what executes
         self.formula = formula  # the sympy Expr, what it means
         # provenance is a DAG of parent Pairs; .steps flattens it on
@@ -299,7 +305,26 @@ class Pair:
         if offset == 0:
             return formula
         index_map = {axis_idx(a): axis_idx(a + offset) for a in range(len(bounds))}
-        return formula.subs(index_map, simultaneous=True)
+        # Capture avoidance: a reduced operand's formula may BIND one of
+        # the target letters as a summation dummy (Sum(X[j, i], (j, ...))
+        # renamed i -> j would capture). Alpha-rename colliding bound
+        # dummies to fresh symbols first; bound names carry no meaning.
+        targets = set(index_map.values())
+        taken = {sym.name for sym in formula.atoms(sympy.Symbol)}
+        alpha = {}
+        for inner in formula.atoms(sympy.Sum):
+            for lim in inner.limits:
+                dummy = lim[0]
+                if dummy in targets and dummy not in alpha:
+                    k = 2
+                    while f"{dummy.name}{k}" in taken:
+                        k += 1
+                    fresh = sympy.Symbol(f"{dummy.name}{k}", integer=True)
+                    taken.add(fresh.name)
+                    alpha[dummy] = fresh
+        if alpha:
+            formula = formula.xreplace(alpha)
+        return formula.xreplace(index_map)
 
     @staticmethod
     def _is_condition(formula):
@@ -422,6 +447,21 @@ class Pair:
             result._slice_of = (self, entries)
         return result
 
+    @staticmethod
+    def _scatter_piecewise(*pieces):
+        """A scatter's Piecewise, built unevaluated when the ctor's
+        piecewise_fold would rebuild relations against NaN branches
+        (zero-scale placeholders) or hoist Sum-bound conditions."""
+        hazard = any(
+            sympy.sympify(part).has(sympy.nan)
+            or _piecewise_under_sum(sympy.sympify(part))
+            for expr, cond in pieces
+            for part in (expr, cond)
+        )
+        if hazard:
+            return sympy.Piecewise(*pieces, evaluate=False)
+        return sympy.Piecewise(*pieces)
+
     def __setitem__(self, key, val):
         # u[2:5] = v: the formula becomes a scatter, old rule outside the
         # written region, the value's rule (re-indexed) inside it
@@ -530,7 +570,7 @@ class Pair:
                     return
                 self.value[key.value] = Pair._value_of(val)
                 prior = self.formula
-                self.formula = sympy.Piecewise(
+                self.formula = Pair._scatter_piecewise(
                     (Pair._formula_of(val), key.formula), (prior, True)
                 )
                 self._record_write(prior, key, val)
@@ -605,7 +645,7 @@ class Pair:
         self.value[key] = Pair._value_of(val)
         prior = self.formula
         if condition:
-            self.formula = sympy.Piecewise(
+            self.formula = Pair._scatter_piecewise(
                 (val_formula, sympy.And(*condition)), (prior, True)
             )
         else:
@@ -1460,11 +1500,21 @@ def _piecewise_under_sum(expr):
 
 def _make_binary(np_op, sy_op, bridge):
     def op(self, other):
+        if bridge and np.isscalar(other) and isinstance(other, float) and np.isnan(other):
+            # comparing against NaN is finiteness VALIDATION, not
+            # mathematics (sympy rightly refuses x < nan). The check
+            # runs on concrete values; downstream code gets its plain
+            # boolean answer.
+            return np_op(self.value, other)
         mine, theirs, merged = Pair._broadcast(self, other, bridge=bridge)
         # sympy's relational constructor hoists Piecewise conditions OUT
         # of a Sum, leaking the bound index. Build unevaluated when that
         # hazard is present; the formula is the honest raw relation.
-        if bridge and (_piecewise_under_sum(mine) or _piecewise_under_sum(theirs)):
+        hazard = _piecewise_under_sum(mine) or _piecewise_under_sum(theirs)
+        # NaN inside an operand (zero-scale placeholders) makes the
+        # ctor's piecewise_fold rebuild a relational against nan
+        hazard = hazard or mine.has(sympy.nan) or theirs.has(sympy.nan)
+        if bridge and hazard:
             formula = sy_op(mine, theirs, evaluate=False)
         else:
             formula = sy_op(mine, theirs)
