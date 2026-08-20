@@ -50,6 +50,7 @@ class TraceSession:
         self.fn_twins = {}
         self.class_twins = {}
         self.hashed = set()
+        self.pending_mask_guards = {}
         self.seq = 0
 
     def reset(self):
@@ -66,6 +67,7 @@ class TraceSession:
         self.fn_twins.clear()
         self.class_twins.clear()
         self.hashed.clear()
+        self.pending_mask_guards.clear()
         self.seq = 0
 
     def next_seq(self):

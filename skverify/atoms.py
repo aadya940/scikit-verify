@@ -12,7 +12,7 @@ scribbled on traced inputs.
 import numpy as np
 import sympy
 
-from .coercion import formula_of, value_of
+from .coercion import value_of
 from .helpers import axis_idx
 from .session import current as _session
 

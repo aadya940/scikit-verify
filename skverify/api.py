@@ -28,6 +28,9 @@ def to_sympy(fn, *args, **kwargs):
     if sys.getrecursionlimit() < 20000:
         sys.setrecursionlimit(20000)
 
+    _session.reset()
+    # reset FIRST: _wrap records disclosures (integer-as-config) into
+    # the session, and they must survive to the harvest
     if kwargs:
         # keyword arguments wrap by their own names
         args = args + tuple(kwargs.values())
@@ -38,7 +41,6 @@ def to_sympy(fn, *args, **kwargs):
         _wrap(name, val)
         for name, val in _infer_names(fn, args[: len(args) - len(kw_wrapped)])
     ]
-    _session.reset()
     sites = ()
     try:
         out = _repack(fn(*wrapped, **kw_wrapped))
@@ -81,6 +83,11 @@ def to_sympy(fn, *args, **kwargs):
         # formula holds for inputs satisfying these preconditions.
         # Attached to whatever came back -- a Pair, or a library object
         # (BSpline) whose attributes carry the traced Pairs
+        for pending in _session.pending_mask_guards.values():
+            # gathers no reduction fused: their selection facts are
+            # preconditions after all
+            _GUARDS.extend(pending)
+        _session.pending_mask_guards.clear()
         out.preconditions = sympy.And(*_GUARDS) if _GUARDS else sympy.true
         records = list(_OPAQUE)
         if _session.hashed:
@@ -102,8 +109,24 @@ def to_sympy(fn, *args, **kwargs):
 
 
 def _wrap(name, val):
-    if val is None or isinstance(val, (bool, np.bool_, int, np.integer, str)):
-        return val  # config, not math: np.diff(a, 2) keeps its plain 2
+    if val is None or isinstance(val, (bool, np.bool_, str)):
+        return val
+    if isinstance(val, (int, np.integer)):
+        # config, not math: np.diff(a, 2) keeps its plain 2. But the
+        # assumption must be DISCLOSED -- an integer that was really
+        # data would otherwise certify a constant silently
+        _session.opaque.append(
+            (
+                f"arg:{name}",
+                (("integer argument", "traced as constant"),),
+                (
+                    f"{name} = {val}",
+                    "integers are treated as configuration; pass a "
+                    "float to trace symbolically",
+                ),
+            )
+        )
+        return val
     if np.isscalar(val):
         return Pair(val, sympy.Symbol(name, real=True))
     if hasattr(val, "to_numpy") and not isinstance(val, np.ndarray):
@@ -324,7 +347,14 @@ def _recompress(formulas):
 
 def _infer_names(fn, args):
     """Pair each positional argument with its parameter name from fn's signature."""
-    names = list(inspect.signature(fn).parameters)
+    params = inspect.signature(fn).parameters
+    names = []
+    for name, p in params.items():
+        if p.kind is inspect.Parameter.VAR_POSITIONAL:
+            # *args: one name per remaining argument
+            names.extend(f"{name}{k}" for k in range(len(args) - len(names)))
+            break
+        names.append(name)
     if len(args) > len(names):
         raise TypeError(f"{fn.__name__} takes {len(names)} arguments, got {len(args)}")
     return zip(names, args)

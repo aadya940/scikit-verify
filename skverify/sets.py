@@ -13,7 +13,6 @@ membership answers with the concrete truth. The formula stays exact
 under the traced input, which is the library-wide contract.
 """
 
-import numpy as np
 import sympy
 
 from .coercion import formula_of, value_of
@@ -91,4 +90,62 @@ class TracedSet:
             other,
             set.symmetric_difference,
             lambda a, b: sympy.SymmetricDifference(a, b),
+        )
+
+
+class TracedDict:
+    """A dict whose lookups by traced keys are SELECTIONS.
+
+    The value lane behaves exactly like the dict it wraps. A lookup
+    with a traced key returns a Pair whose formula is the Piecewise
+    selection over the table: ``d[y]`` where ``d = {0.0: 0, 1.0: 1}``
+    yields ``Piecewise((0, Eq(y, 0.0)), (1, Eq(y, 1.0)))``. Encoding
+    steps (label -> index maps) thereby keep their mathematics.
+    """
+
+    def __init__(self, mapping):
+        self._data = dict(mapping)
+
+    def __len__(self):
+        return len(self._data)
+
+    def __iter__(self):
+        return iter(self._data)
+
+    def keys(self):
+        return self._data.keys()
+
+    def values(self):
+        return self._data.values()
+
+    def items(self):
+        return self._data.items()
+
+    def __contains__(self, key):
+        return _scalar(value_of(key)) in self._data
+
+    def get(self, key, default=None):
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
+    def __getitem__(self, key):
+        from .pair import Pair
+
+        concrete_key = _scalar(value_of(key))
+        stored = self._data[concrete_key]
+        if not isinstance(key, Pair):
+            return stored
+        pieces = []
+        for k, v in self._data.items():
+            k_f = formula_of(_scalar(value_of(k)))
+            v_f = formula_of(_scalar(value_of(v)))
+            pieces.append((v_f, sympy.Eq(key.formula, k_f)))
+        formula = sympy.Piecewise(*pieces, (sympy.nan, True))
+        return Pair(
+            value_of(stored) if isinstance(stored, Pair) else stored,
+            formula,
+            None,
+            steps=(key,),
         )

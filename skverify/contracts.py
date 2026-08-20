@@ -151,6 +151,28 @@ CONTRACTS = {
         "law": "A @ v == w * v",
         "residual": None,
     },
+    "inv": {
+        "requires": [],
+        "law": "A @ inv(A) == I",
+        "residual": lambda args, out: (
+            "ok"
+            if np.allclose(np.asarray(args[0]) @ np.asarray(out), np.eye(len(out)))
+            else "failed"
+        ),
+    },
+    "eigvals": {
+        "requires": [],
+        "law": "det(A - w*I) == 0 for every eigenvalue w",
+        "residual": lambda args, out: (
+            "ok"
+            if all(
+                abs(np.linalg.det(np.asarray(args[0], dtype=complex) - w * np.eye(len(args[0]))))
+                < 1e-6 * max(1.0, abs(np.linalg.det(np.asarray(args[0], dtype=complex))))
+                for w in np.atleast_1d(out)
+            )
+            else "failed"
+        ),
+    },
 }
 
 

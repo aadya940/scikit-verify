@@ -135,6 +135,49 @@ def formula_of(x):
     return sympy.sympify(x)
 
 
+def repack(x):
+    """One indexed Pair from a decompressed object array, or None.
+
+    The inverse of decompression: when every element is a Pair and the
+    element formulas share one provable pattern, the array becomes a
+    single Pair carrying the recompressed indexed formula. Boundaries
+    that need whole-array semantics (method-call reductions, compiled
+    entries) try this FIRST -- succeeding keeps every downstream
+    mechanism on the strong, indexed path.
+
+    Parameters
+    ----------
+    x : ndarray
+        Candidate object array.
+
+    Returns
+    -------
+    Pair or None
+        The repacked Pair, or None when no exact pattern exists
+        (callers fall back to their own handling; refusal stays THEIR
+        contract, not this helper's).
+    """
+    from .pair import Pair
+
+    if not (
+        isinstance(x, np.ndarray)
+        and x.dtype == object
+        and x.size
+        and all(isinstance(e, Pair) for e in x.ravel())
+    ):
+        return None
+    try:
+        formula = formula_of(x)
+    except NotImplementedError:
+        return None
+    return Pair(
+        value_of(x),
+        formula,
+        tuple((0, int(n)) for n in x.shape),
+        steps=tuple(x.ravel()),
+    )
+
+
 def numeric(v, copy=True):
     """Real float array from a plain-number object array.
 

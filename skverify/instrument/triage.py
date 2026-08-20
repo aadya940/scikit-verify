@@ -19,6 +19,10 @@ from ..pair import Pair
 from ..session import current as _session
 from .registries import CONCRETE_BY_NAME, OPAQUE_CALLABLES
 
+# ndarray methods whose signature matches their np.* function: only
+# these may route a decompressed array through the function's entry
+_BAG_REDUCTIONS = {"mean", "sum", "prod", "min", "max", "median", "var", "std", "ptp"}
+
 # The instrumented-function cache is the session's (blank per trace).
 _FN_MEMO = _session.fn_twins
 
@@ -76,6 +80,24 @@ def _skv_maybe(fn):
             return fn(*vals, **kwargs)
 
         return concrete_inventory
+    self_arr = getattr(fn, "__self__", None)
+    if (
+        isinstance(self_arr, np.ndarray)
+        and self_arr.dtype == object
+        and getattr(fn, "__name__", None) in _BAG_REDUCTIONS
+        and any(isinstance(e, Pair) for e in self_arr.ravel())
+    ):
+        # a bound ndarray method on a decompressed traced array: the
+        # traced data is __self__, invisible to argument checks. Route
+        # through the method twin, which repacks when a pattern exists
+        from .runtime import _skv_method
+
+        name = fn.__name__
+
+        def bag_method(*args, **kwargs):
+            return _skv_method(name, self_arr, *args, **kwargs)
+
+        return bag_method
     if inspect.isbuiltin(fn) and not isinstance(
         getattr(fn, "__self__", None), (np.ndarray, Pair, type(np))
     ):
@@ -119,15 +141,17 @@ def _skv_maybe(fn):
                 wrapper = fn
 
                 def peeled(*args, **kwargs):
-                    # some wrappers INJECT arguments (sklearn's device
-                    # shims pass xp): a signature mismatch on the
-                    # peeled inner means the wrapper was load-bearing;
-                    # fall back to it untouched
+                    # some wrappers INJECT arguments into the
+                    # inner call: a signature mismatch on the peeled
+                    # inner means the wrapper was load-bearing; fall
+                    # back to it untouched
                     try:
                         return sub(*args, **kwargs)
                     except TypeError as e:
-                        if "required positional argument" in str(e) or (
-                            "required keyword-only argument" in str(e)
+                        if (
+                            "required positional argument" in str(e)
+                            or "required keyword-only argument" in str(e)
+                            or "unexpected keyword argument" in str(e)
                         ):
                             return wrapper(*args, **kwargs)
                         raise
@@ -179,6 +203,25 @@ def _skv_maybe(fn):
         return dispatcher_shim
     if isinstance(fn, np.ufunc):
         def ufunc_shim(*args, **kwargs):
+            if any(_traced(a) and not isinstance(a, Pair) for a in args):
+                # an object array HOLDING Pairs: numpy's object loop
+                # cannot dispatch a mapped ufunc. Apply elementwise;
+                # each scalar call re-enters the traced path
+                target = kwargs.pop("out", None)
+                if isinstance(target, tuple):
+                    target = target[0]
+                bcast = np.broadcast_arrays(
+                    *[np.asarray(a, dtype=object) for a in args]
+                )
+                out = np.empty(bcast[0].shape, dtype=object)
+                for idx in np.ndindex(bcast[0].shape):
+                    out[idx] = fn(*[b[idx] for b in bcast], **kwargs)
+                if target is not None:
+                    # out= on an object array: element replacement is
+                    # the in-place semantics callers rely on
+                    target[...] = out
+                    return target
+                return out
             if any(
                 isinstance(a, np.ndarray)
                 and a.dtype == object

@@ -21,6 +21,10 @@ from ..session import current as _session
 from .registries import OPAQUE_CALLABLES
 from .rewriter import _Rewriter
 from .runtime import (
+    _skv_dict,
+    _skv_cmp,
+    _skv_float,
+    _skv_getitem,
     _skv_set,
     _skv_at,
     _skv_concrete,
@@ -146,6 +150,10 @@ def _instrument(fn, depth, seen, extra=None):
     namespace["__skv_scalarize__"] = _skv_scalarize
     namespace["__skv_isinstance__"] = _skv_isinstance
     namespace["__skv_set__"] = _skv_set
+    namespace["__skv_dict__"] = _skv_dict
+    namespace["__skv_getitem__"] = _skv_getitem
+    namespace["__skv_cmp__"] = _skv_cmp
+    namespace["__skv_float__"] = _skv_float
     namespace["__skv_concrete_call__"] = _skv_concrete_call
     namespace["__skv_opaque_out__"] = _skv_opaque_out
     namespace["__skv_loop_iter__"] = _loop_iter

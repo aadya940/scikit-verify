@@ -77,6 +77,14 @@ class Pair:
         text = sympy.latex(self.formula)
         return f"$\\displaystyle {text}$"
 
+    def __format__(self, spec):
+        if not spec:
+            return str(self)
+        raise NotImplementedError(
+            "formatting a traced value into a string discards the "
+            "formula; format .value for display"
+        )
+
     def __repr__(self):
         text = str(self.formula)
         if len(text) > 60:
@@ -793,6 +801,51 @@ class Pair:
 
     __rmul__ = __mul__
 
+    def __floordiv__(self, other):
+        if Pair._defers(other):
+            return NotImplemented
+        mine, theirs, merged = Pair._broadcast(self, other)
+        return Pair(
+            value=self.value // Pair._value_of(other),
+            formula=sympy.floor(mine / theirs),
+            domain=merged,
+            steps=Pair._steps_of(self, other),
+        )
+
+    def __rfloordiv__(self, other):
+        if Pair._defers(other):
+            return NotImplemented
+        mine, theirs, merged = Pair._broadcast(self, other)
+        return Pair(
+            value=Pair._value_of(other) // self.value,
+            formula=sympy.floor(theirs / mine),
+            domain=merged,
+            steps=Pair._steps_of(self, other),
+        )
+
+    def __divmod__(self, other):
+        return (self // other, self % other)
+
+    def __rdivmod__(self, other):
+        return (other // self, other % self)
+
+    def __round__(self, ndigits=None):
+        # exact except at half-way ties, where Python rounds to even
+        # and floor(x + 1/2) rounds up: the tie-free condition is
+        # recorded as a path guard, same contract as median's ordering
+        n = 0 if ndigits is None else int(ndigits)
+        scale = sympy.Integer(10) ** n
+        _GUARDS.append(
+            sympy.Ne(sympy.Mod(self.formula * scale + sympy.Rational(1, 2), 1), 0)
+        )
+        formula = sympy.floor(self.formula * scale + sympy.Rational(1, 2)) / scale
+        value = round(
+            float(np.asarray(self.value).item()), ndigits if ndigits is not None else 0
+        )
+        if ndigits is None:
+            value = int(value)
+        return Pair(value, formula, None, steps=(self,))
+
     def __mod__(self, other):
         if Pair._defers(other):
             return NotImplemented
@@ -890,6 +943,20 @@ class Pair:
 
     # facts about the concrete lane; some library bodies read these
     # before doing any math
+    def fill(self, value):
+        # ndarray.fill is a whole-array overwrite: both lanes at once
+        self[...] = value
+
+    def tolist(self):
+        # decompression to scalar Pairs: each element keeps its formula
+        out = self[...] if np.ndim(self.value) else self
+        return [out[k] for k in range(len(np.asarray(self.value)))]
+
+    @property
+    def base(self):
+        # memory-ownership bookkeeping, not math: view checks read it
+        return np.asarray(self.value).base
+
     @property
     def ndim(self):
         return np.ndim(self.value)
@@ -1037,9 +1104,8 @@ class Pair:
 
     def astype(self, dtype=None, copy=True, **kwargs):
         # float casts are math-neutral. Integer casts are LABEL
-        # bookkeeping when the values are already integral (0/1 class
-        # arrays through classification metrics); truncation of
-        # non-integral values would change the math and refuses.
+        # bookkeeping when the values are already integral; truncation
+        # of non-integral values would change the math and refuses.
         vals = np.asarray(Pair._value_of(self.value))
         if dtype is not None and np.dtype(dtype).kind not in "fc":
             if np.dtype(dtype).kind in "iub" and np.all(vals == np.floor(vals)):
@@ -1136,6 +1202,14 @@ class Pair:
         assert n == hi - lo, "domain drifted from value"
         return n
 
+    def __iter__(self):
+        # explicit protocol: pandas' is_list_like (and any hasattr
+        # check) must see an array, not a scalar. Elements keep their
+        # formulas via the same indexing path as unpacking
+        if self._axis_bounds is None:
+            raise TypeError("scalar Pair is not iterable")
+        return (self[k] for k in range(len(self)))
+
     def __getitem__(self, key):
         """Slicing and integer indexing; 1-D is just the N=1 case."""
         if isinstance(key, tuple) and key == ():
@@ -1143,25 +1217,33 @@ class Pair:
         if self._axis_bounds is None:
             raise TypeError("scalar Pair is not subscriptable")
         if isinstance(key, Pair) and Pair._is_condition(key.formula):
-            # mask gather u[u > 0]: the mask's VALUE fixes the selected
-            # positions (trace facts); the mask's CONDITIONS become
-            # per-position preconditions, so the certificate is honest
-            # about the path
+            # mask gather u[u > 0]: the selection is data-dependent, but
+            # its GUARDS are recorded lazily. If a reduction consumes
+            # the gather (sum, bincount, mean -- the overwhelmingly
+            # common case), it fuses the mask INTO the formula as a
+            # Piecewise over the full range and no guards are needed;
+            # any other use flushes the per-position guards at harvest,
+            # keeping the certificate honest either way.
             mask = np.asarray(key.value, dtype=bool)
             sym = axis_idx(0)
+            pending = []
             for pos in range(mask.size):
                 cond = key.formula.subs(sym, pos)
-                _GUARDS.append(cond if mask[pos] else sympy.Not(cond))
+                pending.append(cond if mask[pos] else sympy.Not(cond))
             idx = np.nonzero(mask)[0]
             if idx.size == 0:
                 value = np.asarray(self.value)[mask]
-                return Pair(
+                out = Pair(
                     value,
                     self.formula,
                     ((0, 0),) + tuple(self._axis_bounds[1:]),
                     steps=(self,),
                 )
-            return self._axis_gather(0, idx, mask)
+            else:
+                out = self._axis_gather(0, idx, mask)
+            out._mask_prov = (self, key)
+            _session.pending_mask_guards[id(out)] = pending
+            return out
         parts = key if isinstance(key, tuple) else (key,)
         if any(k is None for k in parts):
             # w[:, None]: newaxis only inserts extent-1 axes -- apply the

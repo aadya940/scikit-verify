@@ -28,6 +28,7 @@ UFUNC_TABLE.update({getattr(np, n): getattr(sympy, n) for n in _SAME})
 UFUNC_TABLE.update({getattr(np, k): getattr(sympy, v) for k, v in _RENAMED.items()})
 
 # Others
+UFUNC_TABLE[np.fabs] = sympy.Abs
 UFUNC_TABLE[np.maximum] = sympy.Max
 UFUNC_TABLE[np.minimum] = sympy.Min
 UFUNC_TABLE[np.arctan2] = sympy.atan2
@@ -178,7 +179,42 @@ def _fresh_dummy(formula, n_axes, base="j"):
     return sympy.Symbol(f"{base}{k}", integer=True)
 
 
+def _masked_fuse(a):
+    """(source, mask) provenance of a mask gather, popping its lazy
+    guards: the reduction that calls this absorbs the mask into the
+    formula, so the guards are not needed."""
+    prov = getattr(a, "_mask_prov", None)
+    if prov is None:
+        return None
+    from ..session import current as _session
+
+    _session.pending_mask_guards.pop(id(a), None)
+    return prov
+
+
 def _sum(a, axis=None, **kwargs):
+    prov = _masked_fuse(a) if isinstance(a, Pair) else None
+    if prov is not None and axis is None:
+        src, mask = prov
+        bounds = src._axis_bounds
+        if bounds is not None and len(bounds) == 1:
+            lo, hi = bounds[0]
+            i0 = axis_idx(0)
+            j = _fresh_dummy(sympy.Tuple(src.formula, mask.formula), 1)
+            body = sympy.Piecewise(
+                (src.formula.xreplace({i0: j}), mask.formula.xreplace({i0: j})),
+                (0, True),
+            )
+            return Pair(
+                np.sum(np.asarray(Pair._value_of(a.value), dtype=float)),
+                sympy.Sum(body, (j, lo, hi - 1)),
+                None,
+                steps=(a,),
+            )
+    return _sum_plain(a, axis=axis, **kwargs)
+
+
+def _sum_plain(a, axis=None, **kwargs):
     if kwargs:
         raise NotImplementedError(f"np.sum kwargs {list(kwargs)} not supported")
     if isinstance(a, Pair) and a.domain is None:
@@ -236,6 +272,41 @@ def _sum(a, axis=None, **kwargs):
     return Pair(np.sum(a.value), formula, None, steps=(a,))
 
 
+def _is_bag(x):
+    return (
+        isinstance(x, np.ndarray)
+        and x.dtype == object
+        and any(isinstance(e, Pair) for e in x.ravel())
+    )
+
+
+def _bag_matmul(a, b):
+    """matmul on decompressed operands: explicit per-element sums.
+
+    A bag has no single indexed pattern (rows may mix unrelated
+    formulas), but the contraction is still exact arithmetic on the
+    element Pairs -- Pair dunders carry both lanes."""
+    A = np.atleast_2d(np.asarray(a, dtype=object))
+    B = np.asarray(b, dtype=object)
+    one_d_b = B.ndim == 1
+    if one_d_b:
+        B = B[:, None]
+    n, m = A.shape
+    m2, p = B.shape
+    out = np.empty((n, p), dtype=object)
+    for i in range(n):
+        for j in range(p):
+            acc = A[i, 0] * B[0, j]
+            for kk in range(1, m):
+                acc = acc + A[i, kk] * B[kk, j]
+            out[i, j] = acc
+    if np.ndim(a) == 1:
+        out = out[0]
+    if one_d_b:
+        out = out[..., 0] if out.ndim else out
+    return out
+
+
 def _matmul(a, b):
     """Contraction as a Sum, numpy matmul semantics for every rank.
 
@@ -243,6 +314,11 @@ def _matmul(a, b):
     1-D operands lose their would-be axis; leading axes are batch dims
     and broadcast (an extent-1 batch axis indexes at 0).
     """
+    if (_is_bag(a) or _is_bag(b)) and np.ndim(a) <= 2 and np.ndim(b) <= 2:
+        return _bag_matmul(
+            a if _is_bag(a) else np.asarray(a, dtype=object),
+            b if _is_bag(b) else np.asarray(b, dtype=object),
+        )
     bounds_a, bounds_b = Pair._domain_of(a), Pair._domain_of(b)
     if bounds_a is None or bounds_b is None:
         raise ValueError("matmul: both operands must be at least 1-D")
@@ -457,6 +533,8 @@ def _diag(v, k=0):
 def _mean(a, axis=None, **kwargs):
     if isinstance(a, Pair):
         return a.mean(axis=axis)
+    if isinstance(a, np.ndarray) and a.ndim == 1 and axis in (0, -1):
+        axis = None  # the only axis of a 1-D array IS the flatten axis
     if (
         isinstance(a, np.ndarray)
         and a.dtype == object
@@ -486,6 +564,32 @@ def _std(a, axis=None, ddof=0, correction=None, **kwargs):
 
 
 def _median(a, axis=None, **kwargs):
+    if np.ndim(Pair._value_of(a)) == 1 and axis in (0, -1):
+        # the only axis of a 1-D array IS the flatten axis
+        axis = None
+    bag = (
+        isinstance(a, np.ndarray)
+        and a.dtype == object
+        and a.ndim == 1
+        and any(isinstance(e, Pair) for e in a.ravel())
+    )
+    if bag and axis is None:
+        # decompressed operand: same selection, element formulas
+        from ..pair import _GUARDS
+
+        vals = np.asarray(Pair._value_of(a), dtype=float)
+        order = np.argsort(vals, kind="stable")
+        forms = [Pair._formula_of(e) for e in a]
+        for k in range(len(order) - 1):
+            _GUARDS.append(
+                sympy.Le(forms[order[k]], forms[order[k + 1]])
+            )
+        mid = len(order) // 2
+        if len(order) % 2:
+            f = forms[order[mid]]
+        else:
+            f = (forms[order[mid - 1]] + forms[order[mid]]) / 2
+        return Pair(np.median(vals), f, None, steps=Pair._steps_of(*a))
     if not isinstance(a, Pair) or axis is not None or len(a._axis_bounds or ()) != 1:
         return np.median(np.asarray(Pair._value_of(a), dtype=float), axis=axis)
     from ..pair import _GUARDS
@@ -561,7 +665,33 @@ def _round(a, decimals=0, **kwargs):
 
 
 FUNCTION_TABLE[np.round] = _round
-def _average(a, axis=None, weights=None, **kwargs):
+def _average(a, axis=None, weights=None, returned=False, **kwargs):
+    if returned:
+        # (average, sum_of_weights): cov-style callers unpack both
+        avg = _average(a, axis=axis, weights=weights)
+        if weights is None:
+            n = np.shape(Pair._value_of(a))[axis] if axis is not None else np.size(
+                Pair._value_of(a)
+            )
+            scl_val, scl_f = float(n), sympy.Integer(int(n))
+        else:
+            w_total = float(np.sum(Pair._value_of(weights)))
+            scl_val, scl_f = w_total, Pair._formula_of(weights) if isinstance(
+                weights, Pair
+            ) else sympy.sympify(w_total)
+        # numpy returns the weight sum BROADCAST to the average's shape
+        # (cov unpacks w_sum[0]); match it
+        avg_shape = np.shape(Pair._value_of(avg))
+        scl = Pair(
+            np.full(avg_shape, scl_val) if avg_shape else scl_val,
+            scl_f,
+            tuple((0, int(d)) for d in avg_shape) or None,
+        )
+        return avg, scl
+    return _average_impl(a, axis=axis, weights=weights, **kwargs)
+
+
+def _average_impl(a, axis=None, weights=None, **kwargs):
     if not isinstance(a, Pair):
         arr = np.asarray(a)
         if (
@@ -612,6 +742,389 @@ def _concrete_inventory(np_fn):
     return entry
 
 
+def _bincount(x, weights=None, minlength=0):
+    """bincount as counting mathematics.
+
+    result[k] = Sum(Piecewise((w_j, Eq(x[j], k)), (0, True)), j) --
+    occurrence counting (or weighted counting) as an explicit Sum for
+    each bin. The bins themselves come from the concrete values (how
+    many bins exist is a trace fact); the counts stay symbolic.
+    """
+    xv = np.asarray(Pair._value_of(x)).astype(int)
+    n = len(xv)
+    n_bins = max(int(xv.max()) + 1 if n else 0, int(minlength))
+    concrete = np.bincount(xv, weights=Pair._value_of(weights) if weights is not None else None, minlength=minlength)
+    if not (isinstance(x, Pair) or (
+        isinstance(x, np.ndarray) and x.dtype == object
+    ) or isinstance(weights, Pair)):
+        return concrete
+    def elem_formulas(arr, m):
+        if isinstance(arr, np.ndarray) and arr.dtype == object:
+            return [Pair._formula_of(e) for e in arr.ravel()]
+        f = Pair._formula_of(arr)
+        i0 = axis_idx(0)
+        return [f.xreplace({i0: sympy.Integer(jj)}) for jj in range(m)]
+
+    bag = getattr(x, "skv_pairs", None)
+    if bag is not None:
+        out = np.empty(n_bins, dtype=object)
+        for k in range(n_bins):
+            terms = []
+            for elem, cond in bag:
+                e_f = Pair._formula_of(elem)
+                c_f = Pair._formula_of(cond) if isinstance(cond, Pair) else sympy.sympify(bool(cond))
+                terms.append(
+                    sympy.Piecewise(
+                        (1, sympy.And(c_f, sympy.Eq(e_f, k))), (0, True)
+                    )
+                )
+            out[k] = Pair(float(concrete[k]), sympy.Add(*terms), None)
+        return out
+    prov = _masked_fuse(x) if isinstance(x, Pair) else None
+    if prov is not None:
+        src, mask = prov
+        bounds = src._axis_bounds
+        if bounds is not None and len(bounds) == 1:
+            lo, hi = bounds[0]
+            i0 = axis_idx(0)
+            out = np.empty(n_bins, dtype=object)
+            for k in range(n_bins):
+                j = sympy.Symbol("j", integer=True)
+                body = sympy.Piecewise(
+                    (
+                        1,
+                        sympy.And(
+                            mask.formula.xreplace({i0: j}),
+                            sympy.Eq(src.formula.xreplace({i0: j}), k),
+                        ),
+                    ),
+                    (0, True),
+                )
+                out[k] = Pair(
+                    float(concrete[k]),
+                    sympy.Sum(body, (j, lo, hi - 1)),
+                    None,
+                )
+            return out
+    x_fs = elem_formulas(x, n)
+    if weights is None:
+        w_fs = [sympy.Integer(1)] * n
+    else:
+        w_fs = elem_formulas(weights, n)
+    out = np.empty(n_bins, dtype=object)
+    for k in range(n_bins):
+        count = sympy.Add(
+            *[
+                sympy.Piecewise((w_fs[jj], sympy.Eq(x_fs[jj], k)), (0, True))
+                for jj in range(n)
+            ]
+        )
+        out[k] = Pair(float(concrete[k]), count, None)
+    return out
+
+
+def _searchsorted(a, v, side="left", sorter=None):
+    """searchsorted as counting mathematics.
+
+    For ascending bins, the insertion index IS a count:
+    side='left'  -> index = Sum_k [bins[k] < v]
+    side='right' -> index = Sum_k [bins[k] <= v]
+    Bins concrete (an inventory), the searched values symbolic: each
+    result element carries its counting formula.
+    """
+    bins = np.asarray(Pair._value_of(a), dtype=float)
+    concrete = np.searchsorted(
+        bins, np.asarray(Pair._value_of(v), dtype=float), side=side, sorter=sorter
+    )
+    bins_traced = isinstance(a, Pair) or (
+        isinstance(a, np.ndarray) and a.dtype == object
+    )
+    v_traced = isinstance(v, Pair) or (
+        isinstance(v, np.ndarray) and v.dtype == object
+    )
+    if sorter is not None or not (bins_traced or v_traced):
+        return concrete
+    if bins_traced:
+        # symbolic bins: index = Sum_k [bins[k] rel v], valid only for
+        # sorted bins -- the ordering is recorded as preconditions
+        from ..session import current as _session
+
+        i0 = axis_idx(0)
+        n = bins.size
+        b_f = [Pair._formula_of(a).subs(i0, k) if isinstance(a, Pair)
+               else Pair._formula_of(a.ravel()[k]) for k in range(n)]
+        for k in range(n - 1):
+            _session.guards.append(sympy.Le(b_f[k], b_f[k + 1]))
+        rel = sympy.Lt if side == "left" else sympy.Le
+
+        def count_for(target_f):
+            return sympy.Add(
+                *[sympy.Piecewise((1, rel(bf, target_f)), (0, True))
+                  for bf in b_f]
+            )
+
+        if np.ndim(concrete) == 0:
+            return Pair(
+                concrete, count_for(Pair._formula_of(v)), None,
+                steps=Pair._steps_of(a, v),
+            )
+        v_f = Pair._formula_of(v)
+        out = np.empty(np.shape(concrete), dtype=object)
+        for j in range(out.size):
+            out.ravel()[j] = Pair(
+                concrete.ravel()[j], count_for(v_f.subs(i0, j)), None,
+                steps=Pair._steps_of(a, v),
+            )
+        return out
+    v_f = Pair._formula_of(v)
+    i0 = axis_idx(0)
+    rel = sympy.Lt if side == "left" else sympy.Le
+
+    def index_formula(elem_formula):
+        return sympy.Add(
+            *[
+                sympy.Piecewise(
+                    (1, rel(sympy.Float(b), elem_formula)), (0, True)
+                )
+                for b in bins
+            ]
+        )
+
+    if np.ndim(concrete) == 0:
+        return Pair(int(concrete), index_formula(v_f), None)
+    out = np.empty(len(concrete), dtype=object)
+    for jj in range(len(concrete)):
+        out[jj] = Pair(
+            int(concrete[jj]), index_formula(v_f.xreplace({i0: jj})), None
+        )
+    return out
+
+
+def _nan_reduce(np_fn, kind):
+    """nan-aware reductions: WHICH entries are nan is a trace fact;
+    the surviving elements reduce symbolically."""
+
+    def entry(a, axis=None, **kwargs):
+        vals = np.asarray(Pair._value_of(a), dtype=float)
+        if axis is not None or not (
+            isinstance(a, Pair)
+            or (isinstance(a, np.ndarray) and a.dtype == object)
+        ):
+            return np_fn(vals, axis=axis, **kwargs)
+        if isinstance(a, np.ndarray):
+            elems = list(a.ravel())
+        else:
+            elems = [a[k] for k in range(len(vals.ravel()))]
+        keep = [e for e, v in zip(elems, vals.ravel()) if not np.isnan(v)]
+        if not keep:
+            return np_fn(vals, **kwargs)
+        total = keep[0]
+        for e in keep[1:]:
+            total = total + e
+        return total / len(keep) if kind == "mean" else total
+
+    return entry
+
+
+def _nanmedian(a, axis=None, **kwargs):
+    """nan-aware median: WHICH entries are nan is a trace fact; the
+    survivors' median is a path-scoped selection under explicit
+    ordering preconditions (same contract as np.median)."""
+    vals = np.asarray(Pair._value_of(a), dtype=float)
+    traced = isinstance(a, Pair) or (
+        isinstance(a, np.ndarray) and a.dtype == object
+    )
+    if not traced or kwargs:
+        return np.nanmedian(vals, axis=axis, **kwargs)
+    from ..pair import _GUARDS
+
+    def elem_formula(idx):
+        if isinstance(a, Pair):
+            f = a.formula
+            for ax, k in enumerate(idx):
+                f = f.subs(axis_idx(ax), int(k))
+            return f
+        return Pair._formula_of(a[idx])
+
+    def median_of(cells):
+        # cells: list of index tuples into vals, nans already dropped
+        cells = sorted(cells, key=lambda idx: vals[idx])
+        for k in range(len(cells) - 1):
+            _GUARDS.append(
+                sympy.Le(elem_formula(cells[k]), elem_formula(cells[k + 1]))
+            )
+        mid = len(cells) // 2
+        if len(cells) % 2:
+            f = elem_formula(cells[mid])
+        else:
+            f = (elem_formula(cells[mid - 1]) + elem_formula(cells[mid])) / 2
+        v = np.nanmedian([vals[c] for c in cells])
+        return Pair(v, f, None, steps=Pair._steps_of(a))
+
+    live = [idx for idx in np.ndindex(vals.shape) if not np.isnan(vals[idx])]
+    if not live:
+        return np.nanmedian(vals, axis=axis)
+    if axis is None:
+        return median_of(live)
+    axis = axis % vals.ndim
+    out_shape = vals.shape[:axis] + vals.shape[axis + 1 :]
+    out = np.empty(out_shape, dtype=object)
+    for oidx in np.ndindex(out_shape):
+        cells = [
+            idx for idx in live
+            if idx[:axis] + idx[axis + 1 :] == oidx
+        ]
+        out[oidx] = (
+            median_of(cells) if cells else np.nan
+        )
+    return out
+
+
+def _mutating_write(np_fn):
+    """copyto/place/putmask as the assignments they secretly are.
+
+    Their whole output is a side effect on the destination; treating
+    them as calls loses the write. Route both lanes through Pair's
+    setitem machinery instead, or refuse when the write cannot be
+    represented -- never pass through silently."""
+
+    def entry(dst, *args, **kwargs):
+        if not isinstance(dst, Pair):
+            raise NotImplementedError(
+                f"{np_fn.__name__} into a non-traced destination holding "
+                "traced values; assign with dst[...] = src instead"
+            )
+        if kwargs:
+            raise NotImplementedError(
+                f"{np_fn.__name__} with options is not supported"
+            )
+        if np_fn is np.copyto:
+            (src,) = args
+            dst[...] = src
+            return None
+        mask, vals = args
+        v = np.asarray(Pair._value_of(vals))
+        if np_fn is np.place and v.size != 1 and v.size != int(
+            np.count_nonzero(np.asarray(Pair._value_of(mask), dtype=bool))
+        ):
+            # np.place CYCLES a short vals list through the mask; a
+            # cycled write has no honest single formula
+            raise NotImplementedError(
+                "np.place with a cycled values list is not supported"
+            )
+        dst[mask] = vals if np.ndim(vals) == 0 or v.size != 1 else (
+            vals[0] if not isinstance(vals, Pair) else vals
+        )
+        return None
+
+    return entry
+
+
+def _nan_to_num(x, copy=True, nan=0.0, posinf=None, neginf=None):
+    """nan_to_num exactly: WHICH entries are nan/inf is a trace fact.
+
+    Finite positions keep their formulas; non-finite positions become
+    the replacement constants numpy would write (the huge finfo bounds
+    for inf unless overridden)."""
+    vals = np.asarray(Pair._value_of(x), dtype=float)
+    fixed = np.nan_to_num(vals, copy=copy, nan=nan, posinf=posinf, neginf=neginf)
+    if not isinstance(x, Pair):
+        return fixed
+    if np.all(np.isfinite(vals)):
+        return Pair(fixed, x.formula, x._axis_bounds, steps=(x,))
+    if vals.ndim == 0:
+        return Pair(fixed, sympy.Float(float(fixed)), None, steps=(x,))
+    sym = axis_idx(0)
+    out = np.empty(vals.shape, dtype=object)
+    for idx in np.ndindex(vals.shape):
+        if np.isfinite(vals[idx]):
+            f = x.formula
+            for ax, k in enumerate(idx):
+                f = f.subs(axis_idx(ax), int(k))
+        else:
+            f = sympy.Float(float(fixed[idx]))
+        out[idx] = Pair(fixed[idx], f, None, steps=(x,))
+    return out
+
+
+def _select(condlist, choicelist, default=0):
+    """np.select is chained np.where; its body only adds a dtype gate
+    that rejects traced masks. Same Piecewise, built directly."""
+    out = _where(condlist[-1], choicelist[-1], default)
+    for cond, choice in zip(condlist[-2::-1], choicelist[-2::-1]):
+        out = _where(cond, choice, out)
+    return out
+
+
+def _interp(x, xp, fp, left=None, right=None, period=None):
+    """Piecewise-linear interpolation, exactly.
+
+    The table (xp, fp) concrete and the query traced: the exact
+    Piecewise over the table's intervals. Compiled internals make a
+    table entry the honest route; a traced TABLE has no closed
+    branch-free form and refuses."""
+    if period is not None:
+        raise NotImplementedError("np.interp with period is not supported")
+    concrete = np.interp(
+        np.asarray(Pair._value_of(x), dtype=float),
+        np.asarray(Pair._value_of(xp), dtype=float),
+        np.asarray(Pair._value_of(fp), dtype=float),
+        left=left,
+        right=right,
+    )
+    if isinstance(xp, Pair) or isinstance(fp, Pair) or _is_bag(xp) or _is_bag(fp):
+        raise NotImplementedError(
+            "np.interp with a traced table: the interval selection has "
+            "no single exact formula; interpolate explicitly instead"
+        )
+    if not (isinstance(x, Pair) or _is_bag(x)):
+        return concrete
+    xs = np.asarray(xp, dtype=float)
+    fs = np.asarray(fp, dtype=float)
+    lo = float(fs[0]) if left is None else float(left)
+    hi = float(fs[-1]) if right is None else float(right)
+
+    def branchwise(q):
+        pieces = [(sympy.Float(lo), q < float(xs[0]))]
+        for k in range(len(xs) - 1):
+            x0, x1 = float(xs[k]), float(xs[k + 1])
+            f0, f1 = float(fs[k]), float(fs[k + 1])
+            slope = (f1 - f0) / (x1 - x0) if x1 != x0 else 0.0
+            pieces.append((f0 + slope * (q - x0), q <= x1))
+        pieces.append((sympy.Float(hi), True))
+        return sympy.Piecewise(*pieces)
+
+    if np.ndim(Pair._value_of(x)) == 0:
+        return Pair(
+            float(concrete), branchwise(Pair._formula_of(x)), None,
+            steps=Pair._steps_of(x),
+        )
+    sym = axis_idx(0)
+    out = np.empty(np.shape(concrete), dtype=object)
+    for k in range(out.size):
+        qf = (
+            Pair._formula_of(x).subs(sym, k)
+            if isinstance(x, Pair)
+            else Pair._formula_of(x.ravel()[k])
+        )
+        out.ravel()[k] = Pair(
+            float(np.ravel(concrete)[k]), branchwise(qf), None,
+            steps=Pair._steps_of(x),
+        )
+    return out
+
+
+FUNCTION_TABLE[np.select] = _select
+FUNCTION_TABLE[np.interp] = _interp
+FUNCTION_TABLE[np.nan_to_num] = _nan_to_num
+FUNCTION_TABLE[np.copyto] = _mutating_write(np.copyto)
+FUNCTION_TABLE[np.place] = _mutating_write(np.place)
+FUNCTION_TABLE[np.putmask] = _mutating_write(np.putmask)
+FUNCTION_TABLE[np.nanmedian] = _nanmedian
+FUNCTION_TABLE[np.nanmean] = _nan_reduce(np.nanmean, "mean")
+FUNCTION_TABLE[np.nansum] = _nan_reduce(np.nansum, "sum")
+FUNCTION_TABLE[np.searchsorted] = _searchsorted
+FUNCTION_TABLE[np.bincount] = _bincount
 FUNCTION_TABLE[np.isin] = _concrete_inventory(np.isin)
 FUNCTION_TABLE[np.setdiff1d] = _concrete_inventory(np.setdiff1d)
 FUNCTION_TABLE[np.union1d] = _concrete_inventory(np.union1d)

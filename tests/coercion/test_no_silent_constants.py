@@ -12,7 +12,7 @@ scipy_stats = pytest.importorskip("scipy.stats")
 
 # open silent-loss bugs, tracked by name; fixing one means removing
 # it here. ADDING a name requires a documented diagnosis, not a wave.
-KNOWN_SILENT = {"sem", "trim_mean"}
+KNOWN_SILENT = {"sem"}
 # context-dependent (flag 27): symbolic standalone, constant/crash under
 # other import orders -- the twin caches are order-dependent. These are
 # NOT stable results; the flag-27 unification is the fix.

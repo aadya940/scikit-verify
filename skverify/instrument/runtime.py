@@ -14,6 +14,8 @@ touched.
 
 import inspect
 
+import operator
+
 import numpy as np
 import sympy
 
@@ -37,12 +39,18 @@ def _skv_ones(shape, dtype=None, *args, **kwargs):
     return Pair(np.ones(shape, dtype=dtype), sympy.Integer(1), _bounds_of(shape))
 
 
-def _skv_full(shape, fill, dtype=None, *args, **kwargs):
+def _skv_full(shape, fill_value, dtype=None, *args, **kwargs):
+    # parameter names mirror np.full: callers pass fill_value by keyword
+    if not isinstance(fill_value, Pair):
+        # a concrete fill stays a concrete buffer: lifting it would pin
+        # a formula that later compiled writes (np.place, putmask)
+        # cannot update -- correct value lane, silently wrong formula
+        return np.full(shape, fill_value, dtype=dtype)
     return Pair(
-        np.full(shape, Pair._value_of(fill)),
-        Pair._formula_of(fill),
+        np.full(shape, Pair._value_of(fill_value), dtype=dtype),
+        Pair._formula_of(fill_value),
         _bounds_of(shape),
-        steps=Pair._steps_of(fill),
+        steps=Pair._steps_of(fill_value),
     )
 
 
@@ -91,6 +99,23 @@ def _skv_method(name, obj, *args, **kwargs):
     ):
         if name in ("astype", "copy"):
             return obj  # traced scalars; the cast/copy is math-neutral
+        from ..coercion import repack
+
+        from .triage import _BAG_REDUCTIONS
+
+        rp = repack(obj) if name in _BAG_REDUCTIONS else None
+        np_fn = getattr(np, name, None) if name in _BAG_REDUCTIONS else None
+        if rp is not None and callable(np_fn):
+            # a provable pattern: back on the indexed path, where the
+            # dispatch protocol routes to the registered entry
+            return np_fn(rp, *args, **kwargs)
+        from ..registry import FUNCTION_TABLE
+
+        entry = FUNCTION_TABLE.get(np_fn)
+        if entry is not None:
+            # no pattern (a permuted bag): the registered entry works
+            # elementwise from the object array
+            return entry(obj, *args, **kwargs)
     if not isinstance(obj, Pair):
         if (
             isinstance(obj, np.ndarray)
@@ -159,6 +184,23 @@ class _SkvAt:
 
 
 def _skv_at(real_at, x, *args, **kwargs):
+    # two callables share the name: ufunc.at (in-place, duplicate
+    # indices accumulate) and array_api_extra's functional at(x, idx)
+    if isinstance(getattr(real_at, "__self__", None), np.ufunc):
+        ufunc = real_at.__self__
+        if not isinstance(x, Pair):
+            return real_at(x, *args, **kwargs)
+        idx = np.ravel(np.asarray(args[0]))
+        if len(args) > 1:
+            vals = np.broadcast_to(np.asarray(args[1]), idx.shape)
+            # sequential per-position updates: exactly ufunc.at's
+            # accumulation semantics, on both lanes via Pair setitem
+            for i, v in zip(idx.tolist(), vals.tolist()):
+                x[int(i)] = ufunc(x[int(i)], v)
+        else:
+            for i in idx.tolist():
+                x[int(i)] = ufunc(x[int(i)])
+        return None
     # array_api_extra's functional update: on a Pair it is setitem on
     # a copy; anything else goes to the real helper
     if isinstance(x, Pair):
@@ -203,6 +245,138 @@ def _skv_set(iterable=()):
     from ..sets import TracedSet
 
     return TracedSet(items)
+
+
+class MaskedElems(np.ndarray):
+    """Survivors of a bag-form mask gather, carrying provenance.
+
+    ``skv_pairs`` holds (element, condition) for EVERY original
+    position; reductions fuse the conditions into their formulas
+    instead of needing per-position guards.
+    """
+
+    def __array_finalize__(self, obj):
+        self.skv_pairs = getattr(obj, "skv_pairs", None)
+
+
+_CMP_OPS = {
+    "eq": operator.eq, "ne": operator.ne, "lt": operator.lt,
+    "le": operator.le, "gt": operator.gt, "ge": operator.ge,
+}
+
+
+def _skv_cmp(op, left, right):
+    """Comparison that survives object arrays of Pairs.
+
+    Plain operands compare natively. When either side is an object
+    array holding Pairs, numpy would bool() each element's condition
+    away; instead compare elementwise and keep the condition Pairs.
+    """
+    def bag(x):
+        return (
+            isinstance(x, np.ndarray)
+            and x.dtype == object
+            and any(isinstance(e, Pair) for e in x.ravel())
+        )
+
+    if bag(left) or bag(right):
+        from ..coercion import value_of
+
+        l = np.asarray(left, dtype=object)
+        r = np.asarray(right, dtype=object)
+        l, r = np.broadcast_arrays(l, r)
+        conds = np.empty(l.shape, dtype=object)
+        truths = np.empty(l.shape, dtype=bool)
+        f = _CMP_OPS[op]
+        for idx in np.ndindex(l.shape):
+            c = f(l[idx], r[idx])
+            conds[idx] = c
+            truths[idx] = bool(value_of(c))
+        # concrete bool lane keeps every downstream numpy op working;
+        # the conditions ride along for gather sites that can use them
+        out = truths.view(MaskedElems)
+        out.skv_pairs = tuple(conds.ravel())
+        return out
+    return _CMP_OPS[op](left, right)
+
+
+def _skv_float(x):
+    """float() that keeps a traced scalar traced."""
+    if isinstance(x, Pair):
+        return Pair(float(np.asarray(x.value).item()), x.formula, None, steps=(x,))
+    if isinstance(x, np.ndarray) and x.size == 1:
+        e = x.ravel()[0]
+        if isinstance(e, Pair):
+            return _skv_float(e)
+        # numpy 2 forbids float() on size-1 arrays; traced shims can
+        # produce (1,) where numpy gives 0-d, so unwrap explicitly
+        return float(np.asarray(e).item())
+    return float(x)
+
+
+def _skv_getitem(obj, key):
+    """Subscript with selection semantics for traced keys.
+
+    A mapping looked up by a traced scalar is a SELECTION: the result
+    carries the Piecewise over the table. Everything else (arrays,
+    lists, plain keys) subscripts normally.
+    """
+    import collections.abc
+
+    if (
+        isinstance(obj, np.ndarray)
+        and obj.dtype == object
+        and isinstance(key, np.ndarray)
+        and key.shape == obj.shape
+        and getattr(key, "skv_pairs", None) is not None
+    ):
+        # bag-form mask gather: y[m] where m is a concrete bool mask
+        # still carrying its per-position condition Pairs. Select by
+        # the truths, keep (element, condition) provenance so a later
+        # reduction can fuse the conditions into its formula
+        truths = np.asarray(key, dtype=bool).ravel()
+        survivors = np.asarray(obj.ravel())[truths]
+        out = np.empty(len(survivors), dtype=object).view(MaskedElems)
+        for jj, e in enumerate(survivors):
+            out[jj] = e
+        out.skv_pairs = tuple(zip(obj.ravel(), key.skv_pairs))
+        return out
+    if isinstance(key, Pair) and isinstance(obj, collections.abc.Mapping):
+        import sympy
+
+        from ..coercion import formula_of, value_of
+
+        v = key.value.item() if hasattr(key.value, "item") else key.value
+        stored = obj[v]
+        pieces = []
+        for k, val in obj.items():
+            if isinstance(val, Pair) or isinstance(k, Pair):
+                k = value_of(k)
+                val_f = formula_of(val)
+            else:
+                val_f = formula_of(val)
+            pieces.append((val_f, sympy.Eq(key.formula, formula_of(k))))
+        formula = sympy.Piecewise(*pieces, (sympy.Symbol("NaN", real=True), True))
+        return Pair(
+            value_of(stored) if isinstance(stored, Pair) else stored,
+            formula,
+            None,
+            steps=(key,),
+        )
+    return obj[key]
+
+
+def _skv_dict(mapping):
+    """Guarded dict: traced keys anywhere make it a TracedDict, whose
+    lookups by traced keys return Piecewise selections."""
+    items = dict(mapping)
+    if any(isinstance(k, Pair) for k in items) or True:
+        # keys may be concrete while LOOKUPS are traced; a TracedDict
+        # costs nothing and preserves selection formulas either way
+        from ..sets import TracedDict
+
+        return TracedDict(items)
+    return items
 
 
 def _skv_isinstance(obj, types):

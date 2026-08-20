@@ -21,6 +21,51 @@ from .registries import (
 )
 
 class _Rewriter(ast.NodeTransformer):
+    def visit_Subscript(self, node):
+        self.generic_visit(node)
+        # only simple-expression indices in Load position: slices keep
+        # native syntax, stores keep assignment semantics
+        if isinstance(node.ctx, ast.Load) and not isinstance(
+            node.slice, (ast.Slice, ast.Tuple)
+        ):
+            return ast.Call(
+                func=ast.Name(id="__skv_getitem__", ctx=ast.Load()),
+                args=[node.value, node.slice],
+                keywords=[],
+            )
+        return node
+
+    def visit_Compare(self, node):
+        self.generic_visit(node)
+        # numpy collapses elementwise comparison of object arrays to a
+        # concrete bool array (each Pair's condition is bool()ed away);
+        # route single comparisons through a runtime helper that keeps
+        # the conditions when Pairs are inside
+        simple = {
+            ast.Eq: "eq", ast.NotEq: "ne", ast.Lt: "lt",
+            ast.LtE: "le", ast.Gt: "gt", ast.GtE: "ge",
+        }
+        if len(node.ops) == 1 and type(node.ops[0]) in simple:
+            return ast.Call(
+                func=ast.Name(id="__skv_cmp__", ctx=ast.Load()),
+                args=[
+                    ast.Constant(value=simple[type(node.ops[0])]),
+                    node.left,
+                    node.comparators[0],
+                ],
+                keywords=[],
+            )
+        return node
+
+    def visit_DictComp(self, node):
+        self.generic_visit(node)
+        self.sites.append("dict comprehension -> selection-preserving")
+        return ast.Call(
+            func=ast.Name(id="__skv_dict__", ctx=ast.Load()),
+            args=[node],
+            keywords=[],
+        )
+
     def __init__(self, fn_globals, tag=""):
         self.fn_globals = fn_globals
         self.tag = tag
@@ -129,7 +174,17 @@ class _Rewriter(ast.NodeTransformer):
                 self.sites.append(f"{ref} (reference) -> pair-preserving")
                 node.args[pos] = ast.Name(id="__skv_neutral__", ctx=ast.Load())
         name = self._target_name(node.func)
-        if name in ALLOC:
+        if (
+            isinstance(node.func, ast.Name)
+            and node.func.id == "float"
+            and len(node.args) == 1
+            and not node.keywords
+        ):
+            # float() forces __float__, which must return a real float:
+            # the one cast a Pair cannot survive. In the twin,
+            # float(pair) keeps the pair (its value lane IS the float)
+            node.func = ast.Name(id="__skv_float__", ctx=ast.Load())
+        elif name in ALLOC:
             self.sites.append(f"{name} -> traced allocation")
             node.func = ast.Name(id=f"__skv_{name}__", ctx=ast.Load())
         elif name in NEUTRAL:
@@ -142,6 +197,9 @@ class _Rewriter(ast.NodeTransformer):
                 args=[ast.Constant(value=name)] + node.args,
                 keywords=node.keywords,
             )
+        elif name == "dict" and isinstance(node.func, ast.Name) and len(node.args) == 1:
+            self.sites.append("dict -> selection-preserving")
+            node.func = ast.Name(id="__skv_dict__", ctx=ast.Load())
         elif name == "set" and isinstance(node.func, ast.Name) and len(node.args) <= 1:
             self.sites.append("set -> guarded dedup")
             node.func = ast.Name(id="__skv_set__", ctx=ast.Load())

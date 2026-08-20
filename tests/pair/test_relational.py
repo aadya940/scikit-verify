@@ -209,14 +209,17 @@ class TestEdges:
         m = u == 0.5
         assert m.formula == sympy.Eq(U[I], 0.5)
 
-    def test_bool_indexing_gathers_with_guards(self):
-        from skverify.pair import _GUARDS
+    def test_bool_indexing_gathers_with_lazy_guards(self):
+        from skverify.session import current as _session
 
         u = make()
-        _GUARDS.clear()
+        _session.pending_mask_guards.clear()
         r = u[u > 0]
         assert np.allclose(np.asarray(r.value, dtype=float), u.value[u.value > 0])
-        assert len(_GUARDS) == len(u.value)  # every position's condition recorded
+        # every position's condition is recorded LAZILY: a fusing
+        # reduction pops them; an unfused gather flushes them at harvest
+        (pending,) = _session.pending_mask_guards.values()
+        assert len(pending) == len(u.value)
 
     def test_isnan_goes_opaque(self):
         u = make()

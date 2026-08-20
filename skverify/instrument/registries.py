@@ -14,6 +14,9 @@ NEUTRAL = {
     "ascontiguousarray",
     "asfortranarray",
     "asarray_chkfinite",
+    # identity on valid input like the asarray family; the dtype/order
+    # requirements are memory bookkeeping, not math
+    "require",
 }
 OPAQUE_CALLABLES = {
     "solve_banded",

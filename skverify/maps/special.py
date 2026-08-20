@@ -33,6 +33,10 @@ def _register():
         "kv": sympy.besselk,
     }
     composed = {
+        # chi2 survival function: Q(v/2, x/2), the regularized upper
+        # incomplete gamma -- exact, differentially tested
+        "chdtrc": lambda v, x: sympy.uppergamma(v / 2, x / 2) / sympy.gamma(v / 2),
+        "chdtr": lambda v, x: sympy.lowergamma(v / 2, x / 2) / sympy.gamma(v / 2),
         "ndtr": lambda z: (1 + sympy.erf(z / sympy.sqrt(2))) / 2,
         "log_ndtr": lambda z: sympy.log((1 + sympy.erf(z / sympy.sqrt(2))) / 2),
         "expit": lambda z: 1 / (1 + sympy.exp(-z)),

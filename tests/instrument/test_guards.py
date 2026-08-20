@@ -87,15 +87,16 @@ class TestGuardedLibraryCode:
         P = sympy.IndexedBase("p")
         assert out.formula.has(P[0]) and out.formula.has(P[2])
 
-    def test_searchsorted_constant_under_path(self):
-        # a guarded C bisection returns a plain int: wrapped as a CONSTANT
-        # whose preconditions are the search's recorded bracketing
+    def test_searchsorted_counting_form(self):
+        # the insertion index IS a count: Sum_k [a[k] < v], exact for
+        # sorted bins -- the ordering rides in the preconditions
         x = np.array([10.0, 20.0, 30.0, 40.0])
         s = to_sympy(lambda a: np.searchsorted(a, 25), x)
-        assert s.formula == sympy.Integer(2)
         assert int(s.value) == 2
         A = sympy.IndexedBase("a")
-        assert s.preconditions.has(sympy.Lt(A[1], 25))
+        subs = {A[k]: x[k] for k in range(4)}
+        assert s.formula.doit().subs(subs) == 2
+        assert s.preconditions.has(sympy.Le(A[1], A[2]))
 
     def test_median_lifts_path_scoped(self):
         out = to_sympy(np.median, np.array([3.0, 1.0, 2.0]))
