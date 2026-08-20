@@ -8,29 +8,32 @@ formula is one constant-size held object -- :class:`Iterate` -- that
 sympy infrastructure traverses, substitutes into, and unrolls on
 demand via ``doit``.
 
-How the template is captured: reverse-engineering it from eager
-formulas fails on sympy's eager ``Number*Add`` distribution (float
-products are not bit-stable across association orders). Instead the
-folder PLANTS an opaque state symbol: before a probe body runs, the
-carried Pair's formula becomes a fresh Dummy, so the body's own
-execution writes the step template directly in terms of that symbol.
-Two probe bodies give two templates; integer and float drift between
-them generalizes to the iteration index (``_generalize``).
+Capture is by PLANTING: before a probe body runs, every scalar carried
+Pair's formula becomes a fresh Dummy, so the body's own execution
+writes the step template directly in terms of those symbols
+(reverse-engineering templates from eager formulas dies on sympy's
+eager Number*Add distribution -- float products are not bit-stable
+across association orders). The carried STATE is discovered, not
+assumed: whichever planted dummies the next body actually references
+are the state slots; one slot folds to a bare ``Iterate``, several
+fold to a Tuple state with per-slot :class:`Nth` accessors. Two probe
+bodies give two templates; integer and float drift between them
+generalizes to the iteration index (``_generalize``).
 
 Verification is by PATH, not by formula: the body is deterministic
 code, so an iteration that fires the same branch guards, seals the
 same opaque calls, and builds the same operation sequence as the
 probe iteration computed the same template. Each subsequent body's
-signature is compared to the probe's; on a match the carried value
-(identified by its position in the deterministic op sequence) becomes
-``Iterate(step, init, count+1)``. No structural formula matching, no
-float bit-stability concerns. A body whose signature differs stops
-the fold; eager exact formulas resume.
+signature is compared to the probe's; on a match the carried values
+(identified by their positions in the deterministic op sequence)
+advance to ``Iterate(step, init, count+1)``. A body whose signature
+differs stops the fold; eager exact formulas resume.
 
 Folding engages only past ``FOLD_START`` iterations: short loops keep
 today's fully unrolled formulas, which existing certificates pin.
 """
 
+import re
 import weakref
 
 import sympy
@@ -43,13 +46,18 @@ FOLD_START = 8
 # parent-sum size estimate at which plain-path blowup counts as a wall
 GROWTH_LIMIT = 50_000
 
+# most state slots the folder will track (a body carrying more than
+# this many independent values is not a foldable recurrence in v1)
+MAX_SLOTS = 16
+
 
 class Iterate(sympy.Function):
     """``Iterate(step, init, count)``: count-fold application of step.
 
-    ``step`` is ``Lambda((s, n), expr)`` -- state and iteration index;
-    ``init`` is the state before the first folded body. The object
-    stays held under symbolic manipulation; ``doit`` unrolls exactly.
+    ``step`` is ``Lambda((s1, .., sk, n), expr)`` -- state slots and
+    iteration index; ``init`` is the state before the first folded
+    body (a ``Tuple`` when k > 1). The object stays held under
+    symbolic manipulation; ``doit`` unrolls exactly.
     """
 
     @classmethod
@@ -63,8 +71,28 @@ class Iterate(sympy.Function):
         if hints.get("deep", True):
             state = state.doit(**hints)
         for n in range(int(count)):
-            state = step(state, sympy.Integer(n))
+            if isinstance(state, sympy.Tuple):
+                state = step(*state, sympy.Integer(n))
+            else:
+                state = step(state, sympy.Integer(n))
         return state
+
+
+class Nth(sympy.Function):
+    """``Nth(tuple_expr, i)``: held component access, unrolled by doit."""
+
+    @classmethod
+    def eval(cls, expr, i):
+        if isinstance(expr, sympy.Tuple) and i.is_Integer:
+            return expr[int(i)]
+        return None
+
+    def doit(self, **hints):
+        expr, i = self.args
+        inner = expr.doit(**hints) if hints.get("deep", True) else expr
+        if isinstance(inner, sympy.Tuple) and i.is_Integer:
+            return inner[int(i)]
+        return Nth(inner, i)
 
 
 def register_pair(pair):
@@ -85,7 +113,7 @@ def _live(refs):
     return [p for p in (r() for r in refs) if p is not None]
 
 
-_ATOM_INDEX = __import__("re").compile(r"_\d+")
+_ATOM_INDEX = re.compile(r"_\d+")
 
 
 def _signature(body, guards_from, opaque_from):
@@ -108,17 +136,16 @@ def _signature(body, guards_from, opaque_from):
     return (ops, guards, atoms)
 
 
-def _last_symbolic(pairs, needs=None):
-    """The newest pair carrying a real formula (optionally one that
-    references ``needs``): the presumed loop-carried value."""
-    for p in reversed(pairs):
-        f = p.formula
-        if not isinstance(f, sympy.Basic) or not f.free_symbols:
-            continue
-        if needs is not None and not f.has(needs):
-            continue
-        return p
-    return None
+def _plantable(pair):
+    """Scalar Pairs with real formulas take a probe Dummy; array state
+    (an IndexedBase-shaped plant) is future work and simply is not
+    planted -- a loop carrying only arrays never folds, loudly."""
+    f = pair.formula
+    return (
+        isinstance(f, sympy.Basic)
+        and f.free_symbols
+        and pair._axis_bounds is None
+    )
 
 
 def on_loop_iter(loop_id, index):
@@ -128,6 +155,7 @@ def on_loop_iter(loop_id, index):
         _session.loop_fold[loop_id] = {
             "phase": "watch",
             "planted": [],  # pairs since first plant, for repair
+            "repairs": {},  # probe Dummy -> its eager meaning
             "guard_mark": len(_session.guards),
             "opaque_mark": len(_session.opaque),
         }
@@ -147,9 +175,9 @@ def on_loop_iter(loop_id, index):
     phase = rec["phase"]
     if phase == "watch":
         if index >= FOLD_START - 1:
-            _plant_first(rec, body)
+            _plant(rec, body, sig)
     elif phase == "probe1":
-        _extract_first(rec, body)
+        _extract_first(rec, body, sig)
     elif phase == "probe2":
         _extract_second(rec, body, sig)
     elif phase == "carry":
@@ -164,114 +192,163 @@ def on_loop_end(loop_id):
         return
     if rec["phase"] == "carry":
         # the final body has no following marker: collapse it here
-        _advance(rec, body, _signature(body, rec["guard_mark"], rec["opaque_mark"]))
+        sig = _signature(body, rec["guard_mark"], rec["opaque_mark"])
+        _advance(rec, body, sig)
     elif rec["phase"] in ("probe1", "probe2"):
         _repair(rec)  # loop ended mid-probe: restore eager formulas
 
 
-def _plant_first(rec, body):
-    p = _last_symbolic(body)
-    if p is None:
-        return  # nothing carried yet; try again next marker
-    s_a = sympy.Dummy("state")
-    rec.update(
-        phase="probe1",
-        orig=p.formula,     # the true init of the folded segment
-        s_a=s_a,
-        planted_pair=weakref.ref(p),
-    )
-    rec["planted"] = [weakref.ref(p)]
-    p.formula = s_a
-    p._fsize = 4  # the swap severs the provenance-size estimate
+def _broken(rec):
+    _repair(rec)
+    rec["phase"] = "broken"
 
 
-def _extract_first(rec, body):
-    q = _last_symbolic(body, needs=rec["s_a"])
-    if q is None:
-        _repair(rec)
-        rec["phase"] = "broken"
+def _plant(rec, body, sig):
+    """Plant a probe Dummy on every plantable pair of this body; the
+    next body reveals which of them are actually carried."""
+    plants = []
+    for pos, p in enumerate(body):
+        if _plantable(p):
+            d = sympy.Dummy(f"state{pos}")
+            plants.append((pos, weakref.ref(p), d, p.formula))
+            rec["repairs"][d] = p.formula
+            p.formula = d
+            p._fsize = 4
+    if not plants:
+        return  # nothing carried yet; keep watching
+    if len(plants) > MAX_SLOTS:
+        _broken(rec)
         return
-    s_b = sympy.Dummy("state")
+    # NOTE: this body's own signature is NOT the reference. Its eager
+    # formulas distribute (Number*Add flattens Mul into Add), so its
+    # op sequence differs from every symbol-carrying body after it.
+    # The reference is taken from the first planted body instead.
+    rec.update(phase="probe1", plants=plants)
+    rec["planted"] = [r for _, r, _, _ in plants]
+
+
+def _extract_first(rec, body, sig):
+    """The body ran on planted dummies: the referenced dummies are the
+    state; read each slot's template off the same positions."""
+    rec["sig_probe"] = sig  # first symbol-carrying body: the reference
+    dummies = {d for _, _, d, _ in rec["plants"]}
+    used = set()
+    for p in body:
+        if isinstance(p.formula, sympy.Basic):
+            used |= p.formula.free_symbols & dummies
+    slots = [pl for pl in rec["plants"] if pl[2] in used]
+    if not slots or any(pl[0] >= len(body) for pl in slots):
+        _broken(rec)
+        return
+    positions = [pl[0] for pl in slots]
+    t_a = [body[pos].formula for pos in positions]
+    if not all(isinstance(t, sympy.Basic) for t in t_a):
+        _broken(rec)
+        return
+    # plant round two on the SAME positions of this body
+    b_dummies = []
+    for j, pos in enumerate(positions):
+        d = sympy.Dummy(f"state{pos}")
+        # eager meaning of this body's slot: its template with round-
+        # one dummies substituted back
+        rec["repairs"][d] = t_a[j].xreplace(rec["repairs"])
+        b_dummies.append(d)
+        body[pos].formula = d
+        body[pos]._fsize = 4
     rec.update(
         phase="probe2",
-        t_a=q.formula,      # template in terms of s_a
-        probe2_pair=weakref.ref(q),
-        s_b=s_b,
+        positions=positions,
+        a_dummies=[pl[2] for pl in slots],
+        b_dummies=b_dummies,
+        t_a=t_a,
+        init=sympy.Tuple(*(pl[3] for pl in slots)),
     )
-    q.formula = s_b
-    q._fsize = 4
 
 
 def _extract_second(rec, body, sig):
     from .derivation import _generalize
 
-    r = _last_symbolic(body, needs=rec["s_b"])
-    if r is None:
-        _repair(rec)
-        rec["phase"] = "broken"
+    if sig != rec["sig_probe"] or any(
+        pos >= len(body) for pos in rec["positions"]
+    ):
+        _broken(rec)
         return
-    t_b = r.formula.xreplace({rec["s_b"]: rec["s_a"]})
+    remap = dict(zip(rec["b_dummies"], rec["a_dummies"]))
+    a_set = set(rec["a_dummies"])
+    b_set = set(rec["b_dummies"])
     n = sympy.Dummy("n", integer=True, nonnegative=True)
-    template = _generalize(rec["t_a"], t_b, n)
-    if template is None:
-        _repair(rec)
-        rec["phase"] = "broken"
-        return
-    s = sympy.Dummy("s")
-    step = sympy.Lambda((s, n), template.xreplace({rec["s_a"]: s}))
-    r.formula = Iterate(step, rec["orig"], sympy.Integer(2))
-    r._fsize = 64
-    rec.update(
-        phase="carry",
-        step=step,
-        count=2,
-        head=weakref.ref(r),
-        sig=sig,
-        # identity scan: list.index would compare Pairs with ==,
-        # minting mask Pairs whose bool() records spurious guards
-        carry_pos=next(i for i, q2 in enumerate(body) if q2 is r),
-    )
+    templates = []
+    for j, pos in enumerate(rec["positions"]):
+        f = body[pos].formula
+        if not isinstance(f, sympy.Basic) or f.free_symbols & a_set:
+            # a stale round-one symbol here means a distance-2
+            # reference (state from two iterations back): not a
+            # first-order recurrence, not foldable in v1
+            _broken(rec)
+            return
+        t = _generalize(rec["t_a"][j], f.xreplace(remap), n)
+        if t is None or t.free_symbols & b_set:
+            _broken(rec)
+            return
+        templates.append(t)
+    s_syms = [sympy.Dummy(f"s{j}") for j in range(len(templates))]
+    slot_map = dict(zip(rec["a_dummies"], s_syms))
+    exprs = [t.xreplace(slot_map) for t in templates]
+    scalar = len(templates) == 1
+    if scalar:
+        step = sympy.Lambda((s_syms[0], n), exprs[0])
+        init = rec["init"][0]
+    else:
+        step = sympy.Lambda(tuple(s_syms) + (n,), sympy.Tuple(*exprs))
+        init = rec["init"]
+    held = Iterate(step, init, sympy.Integer(2))
+    for j, pos in enumerate(rec["positions"]):
+        body[pos].formula = held if scalar else Nth(held, sympy.Integer(j))
+        body[pos]._fsize = 64
+    rec.update(phase="carry", step=step, init_expr=init, count=2, scalar=scalar)
     # earlier pairs may still hold probe symbols: restore their eager
     # meaning so nothing outside the fold ever sees a Dummy
-    _repair(rec, keep_head=r)
+    keep = {id(body[pos]) for pos in rec["positions"]}
+    _repair(rec, keep_ids=keep)
 
 
 def _advance(rec, body, sig):
     """Same path fingerprint as the probe body => same deterministic
-    dataflow => the template applies; the carried value sits at the
-    same position in the op sequence. No formula matching."""
-    if sig != rec["sig"] or rec["carry_pos"] >= len(body):
+    dataflow => the templates apply; the carried values sit at the
+    same positions. No formula matching."""
+    if sig != rec["sig_probe"] or any(
+        pos >= len(body) for pos in rec["positions"]
+    ):
         rec["phase"] = "broken"  # eager formulas remain exact; fold ends
         return
-    p_new = body[rec["carry_pos"]]
     m = rec["count"]
-    p_new.formula = Iterate(rec["step"], rec["orig"], sympy.Integer(m + 1))
-    p_new._fsize = 64
+    held = Iterate(rec["step"], rec["init_expr"], sympy.Integer(m + 1))
+    for j, pos in enumerate(rec["positions"]):
+        body[pos].formula = (
+            held if rec["scalar"] else Nth(held, sympy.Integer(j))
+        )
+        body[pos]._fsize = 64
     rec["count"] = m + 1
-    rec["head"] = weakref.ref(p_new)
 
 
-def _repair(rec, keep_head=None):
+def _repair(rec, keep_ids=()):
     """Substitute probe symbols back to their eager meanings in every
     pair created since the first plant: no Dummy may outlive the fold
-    attempt. ``keep_head`` (the new Iterate) is exempt."""
-    subs = {}
-    if "s_b" in rec:
-        subs[rec["s_b"]] = rec["t_a"]           # state after probe 1
-    if "s_a" in rec:
-        subs[rec["s_a"]] = rec["orig"]
+    attempt. Pairs in ``keep_ids`` (the new Iterate heads) are exempt.
+    Guards recorded during probe bodies carry the symbols too -- a
+    Dummy in .preconditions would be an unbound symbol in a
+    certificate."""
+    subs = rec.get("repairs", {})
     if not subs:
         return
+    keys = set(subs)
     for ref in rec.get("planted", ()):
         p = ref()
-        if p is None or p is keep_head:
+        if p is None or id(p) in keep_ids:
             continue
         f = p.formula
-        if isinstance(f, sympy.Basic) and f.free_symbols & set(subs):
+        if isinstance(f, sympy.Basic) and f.free_symbols & keys:
             p.formula = f.xreplace(subs).xreplace(subs)
-    # guards recorded during probe bodies carry the probe symbols too:
-    # a Dummy in .preconditions would be an unbound symbol in a
-    # certificate. Rewrite them to their eager meanings in place.
     for i, g in enumerate(_session.guards):
-        if isinstance(g, sympy.Basic) and g.free_symbols & set(subs):
+        if isinstance(g, sympy.Basic) and g.free_symbols & keys:
             _session.guards[i] = g.xreplace(subs).xreplace(subs)

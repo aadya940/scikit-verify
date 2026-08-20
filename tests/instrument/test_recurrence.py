@@ -117,3 +117,25 @@ class TestFold:
         f = out.formula.subs(subs)
         got = float(sympy.N(f.doit() if f.atoms(Iterate) else f))
         assert np.isclose(got, float(nested(vals)))
+
+    def test_coupled_state_folds_to_tuple_iterate(self):
+        def coupled(x):
+            a = x[0]
+            b = x[1]
+            for _ in range(20):
+                a, b = a + 0.1 * b, b + 0.2 * a * a
+            return a + b
+
+        from skverify.recurrence import Nth
+
+        vals = np.array([0.3, 0.5])
+        out = to_sympy(coupled, vals)
+        f = out.formula
+        assert f.atoms(Iterate) and f.atoms(Nth)
+        it = next(iter(f.atoms(Iterate)))
+        step = it.args[0]
+        s0, s1, n = step.variables
+        assert step.expr == sympy.Tuple(s0 + 0.1 * s1, 0.2 * s0**2 + s1)
+        X = sympy.IndexedBase("x")
+        got = float(sympy.N(f.subs({X[0]: 0.3, X[1]: 0.5}).doit()))
+        assert np.isclose(got, float(coupled(vals)))
