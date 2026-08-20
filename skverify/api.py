@@ -97,7 +97,16 @@ def to_sympy(fn, *args, **kwargs):
 
             rec_map = dict(_session.recurrences)
             if hasattr(out, "formula") and isinstance(out.formula, sympy.Basic):
-                out.formula = inline(out.formula, rec_map)
+                f = out.formula
+                if isinstance(f, sympy.NDimArray):
+                    # inline per element: the container itself must be
+                    # rebuilt EVALUATED or its internal loop size stays
+                    # an unevaluated Mul and printing breaks
+                    out.formula = sympy.ImmutableDenseNDimArray(
+                        [inline(e, rec_map) for e in f], f.shape
+                    )
+                else:
+                    out.formula = inline(f, rec_map)
             for i, g in enumerate(_GUARDS):
                 if isinstance(g, sympy.Basic):
                     _GUARDS[i] = inline(g, rec_map)
