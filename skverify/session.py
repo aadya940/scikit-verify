@@ -53,6 +53,7 @@ class TraceSession:
         self.pending_mask_guards = {}
         self.loop_new = []
         self.loop_fold = {}
+        self.recurrences = {}
         self.seq = 0
 
     def reset(self):
@@ -72,6 +73,7 @@ class TraceSession:
         self.pending_mask_guards.clear()
         self.loop_new.clear()
         self.loop_fold.clear()
+        self.recurrences.clear()
         self.seq = 0
 
     def next_seq(self):

@@ -46,6 +46,11 @@ FOLD_START = 8
 # parent-sum size estimate at which plain-path blowup counts as a wall
 GROWTH_LIMIT = 50_000
 
+# body size at which the fold engages early: for fast-growing bodies
+# every eager iteration multiplies the init formulas the fold must
+# embed, so waiting is strictly worse
+PLANT_TRIGGER = 2_000
+
 # most state slots the folder will track (a body carrying more than
 # this many independent values is not a foldable recurrence in v1)
 MAX_SLOTS = 16
@@ -70,11 +75,15 @@ class Iterate(sympy.Function):
             return self
         if hints.get("deep", True):
             state = state.doit(**hints)
+        slot_syms = step.variables[:-1]
+        n_sym = step.variables[-1]
         for n in range(int(count)):
-            if isinstance(state, sympy.Tuple):
-                state = step(*state, sympy.Integer(n))
-            else:
-                state = step(state, sympy.Integer(n))
+            vals = state if isinstance(state, sympy.Tuple) else (state,)
+            expr = step.expr
+            for sym, val in zip(slot_syms, vals):
+                expr = _subst_slot(expr, sym, val)
+            expr = expr.xreplace({n_sym: sympy.Integer(n)})
+            state = expr if not isinstance(state, sympy.Tuple) else expr
         return state
 
 
@@ -102,7 +111,10 @@ def register_pair(pair):
     eagerly; past the limit the honest output is a refusal, not a
     hang."""
     _session.loop_new.append(weakref.ref(pair))
-    if pair._fsize > 4 * GROWTH_LIMIT:
+    if pair._fsize > 200 * GROWTH_LIMIT:
+        # generous: the pre-probe iterations of a fast-growing body
+        # must survive long enough for the fold to engage at
+        # FOLD_START; this only fires when the fold then FAILS
         raise NotImplementedError(
             "loop body is not one template under the iteration index; "
             "the unrolled formula grows without bound"
@@ -114,6 +126,12 @@ def _live(refs):
 
 
 _ATOM_INDEX = re.compile(r"_\d+")
+
+
+def _axis0():
+    from .helpers import axis_idx
+
+    return axis_idx(0)
 
 
 def _signature(body, guards_from, opaque_from):
@@ -137,15 +155,47 @@ def _signature(body, guards_from, opaque_from):
 
 
 def _plantable(pair):
-    """Scalar Pairs with real formulas take a probe Dummy; array state
-    (an IndexedBase-shaped plant) is future work and simply is not
-    planted -- a loop carrying only arrays never folds, loudly."""
+    """Which probe stands in for this pair: a plain Dummy for scalars,
+    an IndexedBase over a Dummy label for 1-D arrays (the template
+    then holds ``state[i]`` and reductions over it become Sums)."""
     f = pair.formula
-    return (
-        isinstance(f, sympy.Basic)
-        and f.free_symbols
-        and pair._axis_bounds is None
-    )
+    if not (isinstance(f, sympy.Basic) and f.free_symbols):
+        return None
+    if pair._axis_bounds is None:
+        return "scalar"
+    if len(pair._axis_bounds) == 1:
+        return "array"
+    return None
+
+
+def _probe_for(kind, pos):
+    from .helpers import axis_idx
+
+    label = sympy.Dummy(f"state{pos}")
+    if kind == "scalar":
+        return label, label
+    return label, sympy.IndexedBase(label)[axis_idx(0)]
+
+
+def _subst_slot(expr, label, value):
+    """Substitute one state slot into an expression: scalars by
+    xreplace; array slots elementwise -- ``state[k]`` becomes the
+    slot's indexed formula evaluated at ``k``."""
+    from .helpers import axis_idx
+
+    i0 = axis_idx(0)
+
+    def is_slot(e):
+        return (
+            isinstance(e, sympy.Indexed)
+            and getattr(e.base, "label", None) == label
+        )
+
+    if expr.has(sympy.Indexed):
+        expr = expr.replace(
+            is_slot, lambda e: value.subs(i0, e.indices[0])
+        )
+    return expr.xreplace({label: value})
 
 
 def on_loop_iter(loop_id, index):
@@ -170,11 +220,17 @@ def on_loop_iter(loop_id, index):
     if rec["phase"] != "watch":
         rec["planted"].extend(weakref.ref(p) for p in body)
     sig = _signature(body, rec["guard_mark"], rec["opaque_mark"])
+    rec["adv_guard_mark"] = rec["guard_mark"]
     rec["guard_mark"] = len(_session.guards)
     rec["opaque_mark"] = len(_session.opaque)
     phase = rec["phase"]
     if phase == "watch":
-        if index >= FOLD_START - 1:
+        # engage at FOLD_START, or immediately when the body is
+        # already snowballing (fast-growing solvers never survive
+        # eight eager iterations)
+        if index >= FOLD_START - 1 or any(
+            p._fsize > PLANT_TRIGGER for p in body
+        ):
             _plant(rec, body, sig)
     elif phase == "probe1":
         _extract_first(rec, body, sig)
@@ -193,6 +249,7 @@ def on_loop_end(loop_id):
     if rec["phase"] == "carry":
         # the final body has no following marker: collapse it here
         sig = _signature(body, rec["guard_mark"], rec["opaque_mark"])
+        rec["adv_guard_mark"] = rec["guard_mark"]
         _advance(rec, body, sig)
     elif rec["phase"] in ("probe1", "probe2"):
         _repair(rec)  # loop ended mid-probe: restore eager formulas
@@ -208,39 +265,51 @@ def _plant(rec, body, sig):
     next body reveals which of them are actually carried."""
     plants = []
     for pos, p in enumerate(body):
-        if _plantable(p):
-            d = sympy.Dummy(f"state{pos}")
-            plants.append((pos, weakref.ref(p), d, p.formula))
-            rec["repairs"][d] = p.formula
-            p.formula = d
+        kind = _plantable(p)
+        if kind:
+            label, probe = _probe_for(kind, pos)
+            plants.append((pos, weakref.ref(p), label, p.formula, kind))
+            rec["repairs"][label] = p.formula
+            p.formula = probe
             p._fsize = 4
     if not plants:
         return  # nothing carried yet; keep watching
-    if len(plants) > MAX_SLOTS:
+    if len(plants) > 512:
+        # pathological body size; planting is cheap but not free
         _broken(rec)
         return
     # NOTE: this body's own signature is NOT the reference. Its eager
     # formulas distribute (Number*Add flattens Mul into Add), so its
     # op sequence differs from every symbol-carrying body after it.
     # The reference is taken from the first planted body instead.
-    rec.update(phase="probe1", plants=plants)
-    rec["planted"] = [r for _, r, _, _ in plants]
+    rec.update(
+        phase="probe1",
+        plants=plants,
+        plant_guard_mark=len(_session.guards),
+    )
+    rec["planted"] = [r for _, r, _, _, _ in plants]
 
 
 def _extract_first(rec, body, sig):
     """The body ran on planted dummies: the referenced dummies are the
     state; read each slot's template off the same positions."""
     rec["sig_probe"] = sig  # first symbol-carrying body: the reference
-    dummies = {d for _, _, d, _ in rec["plants"]}
+    dummies = {d for _, _, d, _, _ in rec["plants"]}
     used = set()
     for p in body:
         if isinstance(p.formula, sympy.Basic):
             used |= p.formula.free_symbols & dummies
     slots = [pl for pl in rec["plants"] if pl[2] in used]
-    if not slots or any(pl[0] >= len(body) for pl in slots):
+    if not slots or len(slots) > MAX_SLOTS or any(
+        pl[0] >= len(body) for pl in slots
+    ):
+        # the CARRIED set is what must stay small: a body genuinely
+        # consuming more than MAX_SLOTS prior values is not a
+        # recurrence the certificate can hold
         _broken(rec)
         return
     positions = [pl[0] for pl in slots]
+    kinds = [pl[4] for pl in slots]
     t_a = [body[pos].formula for pos in positions]
     if not all(isinstance(t, sympy.Basic) for t in t_a):
         _broken(rec)
@@ -248,16 +317,22 @@ def _extract_first(rec, body, sig):
     # plant round two on the SAME positions of this body
     b_dummies = []
     for j, pos in enumerate(positions):
-        d = sympy.Dummy(f"state{pos}")
-        # eager meaning of this body's slot: its template with round-
-        # one dummies substituted back
-        rec["repairs"][d] = t_a[j].xreplace(rec["repairs"])
-        b_dummies.append(d)
-        body[pos].formula = d
+        label, probe = _probe_for(kinds[j], pos)
+        # eager meaning of this body's slot IS its template; the
+        # round-one dummies inside resolve recursively at repair time
+        # (materializing them here would rebuild the giant pre-plant
+        # formulas the fold exists to avoid)
+        rec["repairs"][label] = t_a[j]
+        b_dummies.append(label)
+        rec.setdefault("b_plants", []).append(
+            (weakref.ref(body[pos]), t_a[j])
+        )
+        body[pos].formula = probe
         body[pos]._fsize = 4
     rec.update(
         phase="probe2",
         positions=positions,
+        kinds=kinds,
         a_dummies=[pl[2] for pl in slots],
         b_dummies=b_dummies,
         t_a=t_a,
@@ -274,6 +349,8 @@ def _extract_second(rec, body, sig):
         _broken(rec)
         return
     remap = dict(zip(rec["b_dummies"], rec["a_dummies"]))
+    # for array slots the Dummy is an IndexedBase LABEL: xreplace on
+    # the label rewrites the base too, so one map serves both kinds
     a_set = set(rec["a_dummies"])
     b_set = set(rec["b_dummies"])
     n = sympy.Dummy("n", integer=True, nonnegative=True)
@@ -302,10 +379,43 @@ def _extract_second(rec, body, sig):
         step = sympy.Lambda(tuple(s_syms) + (n,), sympy.Tuple(*exprs))
         init = rec["init"]
     held = Iterate(step, init, sympy.Integer(2))
+    loop_tag = len(_session.recurrences)
+    head_syms = [
+        sympy.Symbol(f"loop{loop_tag}_{j}", real=True)
+        for j in range(len(templates))
+    ]
     for j, pos in enumerate(rec["positions"]):
-        body[pos].formula = held if scalar else Nth(held, sympy.Integer(j))
-        body[pos]._fsize = 64
-    rec.update(phase="carry", step=step, init_expr=init, count=2, scalar=scalar)
+        # the trace works with a FEATHERWEIGHT symbol: dragging the
+        # held Iterate through every downstream sympy ctor (Abs.eval,
+        # signsimp, assumption deduction) costs minutes per body. The
+        # real object is inlined at harvest.
+        _session.recurrences[head_syms[j]] = (
+            held if scalar else Nth(held, sympy.Integer(j))
+        )
+        body[pos].formula = head_syms[j]
+        body[pos]._fsize = 8
+    rec.update(
+        phase="carry",
+        step=step,
+        init_expr=init,
+        count=2,
+        scalar=scalar,
+        head_syms=head_syms,
+    )
+    # the fold SUCCEEDED: round-two probe symbols have an exact light
+    # meaning -- the state after one folded transition. Repairing them
+    # to the eager trees instead would hand every later consumer
+    # (convergence checks reading copies of probe-body values) a giant
+    # expression to drag through sympy's eval machinery.
+    after_one = Iterate(step, init, sympy.Integer(1))
+    for j, label in enumerate(rec["b_dummies"]):
+        rec["repairs"][label] = (
+            after_one if scalar else Nth(after_one, sympy.Integer(j))
+        )
+    rec["b_plants"] = [
+        (r, rec["repairs"][label])
+        for (r, _), label in zip(rec.get("b_plants", ()), rec["b_dummies"])
+    ]
     # earlier pairs may still hold probe symbols: restore their eager
     # meaning so nothing outside the fold ever sees a Dummy
     keep = {id(body[pos]) for pos in rec["positions"]}
@@ -316,18 +426,37 @@ def _advance(rec, body, sig):
     """Same path fingerprint as the probe body => same deterministic
     dataflow => the templates apply; the carried values sit at the
     same positions. No formula matching."""
+    for p in body:
+        # carry-phase bodies build from head symbols: formula-small by
+        # construction whether or not this body extends the fold. The
+        # provenance-sum estimate would otherwise snowball and trip
+        # the growth wall on post-loop consumers (a convergence break
+        # makes the final body partial, failing the signature).
+        p._fsize = min(p._fsize, 32)
     if sig != rec["sig_probe"] or any(
         pos >= len(body) for pos in rec["positions"]
     ):
         rec["phase"] = "broken"  # eager formulas remain exact; fold ends
         return
     m = rec["count"]
+    # guards recorded during this body reference the head symbols,
+    # which meant the state BEFORE this body ran: pin them to that
+    # iteration's held object now, or the harvest inline would
+    # wrongly give every guard the final state
+    prev = {
+        sym: _session.recurrences[sym] for sym in rec["head_syms"]
+    }
+    for i in range(rec["adv_guard_mark"], len(_session.guards)):
+        g = _session.guards[i]
+        if isinstance(g, sympy.Basic) and g.free_symbols & set(prev):
+            _session.guards[i] = g.xreplace(prev)
     held = Iterate(rec["step"], rec["init_expr"], sympy.Integer(m + 1))
-    for j, pos in enumerate(rec["positions"]):
-        body[pos].formula = (
+    for j, sym in enumerate(rec["head_syms"]):
+        _session.recurrences[sym] = (
             held if rec["scalar"] else Nth(held, sympy.Integer(j))
         )
-        body[pos]._fsize = 64
+    for j, pos in enumerate(rec["positions"]):
+        body[pos].formula = rec["head_syms"][j]
     rec["count"] = m + 1
 
 
@@ -342,13 +471,61 @@ def _repair(rec, keep_ids=()):
     if not subs:
         return
     keys = set(subs)
-    for ref in rec.get("planted", ()):
-        p = ref()
+    done = set()
+    # planted pairs repair by DIRECT assignment: substituting a probe
+    # symbol inside its own bare formula would drag the (potentially
+    # giant) original through xreplace, and for array probes would
+    # rewrite the IndexedBase label into a malformed base
+    for pl in rec.get("plants", ()):
+        p = pl[1]()
         if p is None or id(p) in keep_ids:
             continue
         f = p.formula
+        is_probe = f == pl[2] or (
+            isinstance(f, sympy.Indexed)
+            and getattr(f.base, "label", None) == pl[2]
+        )
+        if is_probe:
+            p.formula = pl[3]
+            done.add(id(p))
+    for ref, eager in rec.get("b_plants", ()):
+        p = ref()
+        if p is not None and id(p) not in keep_ids:
+            p.formula = eager  # may hold round-one symbols: fix below
+            # NOT marked done: fix() must resolve those round-one refs
+
+    def fix(f):
+        for _ in range(2):  # round-two meanings may hold round-one symbols
+            present = f.free_symbols & keys
+            if not present:
+                break
+            # one xreplace for scalar occurrences of every present
+            # symbol, one replace pass for all Indexed slots together:
+            # cost is two traversals of f, not one per dummy
+            f = f.xreplace({d: subs[d] for d in present})
+            if f.has(sympy.Indexed):
+                f = f.replace(
+                    lambda e: isinstance(e, sympy.Indexed)
+                    and getattr(e.base, "label", None) in keys,
+                    lambda e: subs[e.base.label].subs(
+                        _axis0(), e.indices[0]
+                    ),
+                )
+        return f
+
+    for ref in rec.get("planted", ()):
+        p = ref()
+        if p is None or id(p) in keep_ids or id(p) in done:
+            # direct-assigned pairs hold pre-plant formulas: re-walking
+            # them (free_symbols is uncached) would traverse the giant
+            # eager trees the fold exists to avoid
+            continue
+        f = p.formula
         if isinstance(f, sympy.Basic) and f.free_symbols & keys:
-            p.formula = f.xreplace(subs).xreplace(subs)
-    for i, g in enumerate(_session.guards):
+            p.formula = fix(f)
+    # only guards recorded since the plant can hold probe symbols
+    start = rec.get("plant_guard_mark", 0)
+    for i in range(start, len(_session.guards)):
+        g = _session.guards[i]
         if isinstance(g, sympy.Basic) and g.free_symbols & keys:
-            _session.guards[i] = g.xreplace(subs).xreplace(subs)
+            _session.guards[i] = fix(g)

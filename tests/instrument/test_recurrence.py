@@ -7,6 +7,7 @@ template breaks the fold and the eager exact formulas resume.
 """
 
 import numpy as np
+import pytest
 import sympy
 
 from skverify import to_sympy
@@ -139,3 +140,30 @@ class TestFold:
         X = sympy.IndexedBase("x")
         got = float(sympy.N(f.subs({X[0]: 0.3, X[1]: 0.5}).doit()))
         assert np.isclose(got, float(coupled(vals)))
+
+    def test_bayesian_ridge_lifts_with_held_recurrence(self):
+        sklearn = pytest.importorskip("sklearn")
+        from sklearn.linear_model import BayesianRidge
+
+        X = np.array(
+            [[1.0, 2.0], [2.0, 1.5], [3.0, 3.5], [4.0, 3.0], [5.0, 5.5]]
+        )
+        y = np.array([1.1, 1.9, 3.2, 3.8, 5.1])
+
+        def fit_coef(X, y):
+            return BayesianRidge().fit(X, y).coef_
+
+        out = to_sympy(fit_coef, X, y)
+        assert np.allclose(
+            np.asarray(out.value, dtype=float), fit_coef(X, y)
+        )
+        # the certificate holds the fitted-coefficient formula with the
+        # alpha/lambda fixed-point iteration as a held recurrence
+        held = set()
+        for e in np.ravel(out.formula):
+            if hasattr(e, "atoms"):
+                held |= e.atoms(Iterate)
+        assert held
+        it = next(iter(held))
+        step = it.args[0]
+        assert len(step.variables) == 3  # two state slots + n

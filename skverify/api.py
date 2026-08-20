@@ -88,6 +88,15 @@ def to_sympy(fn, *args, **kwargs):
             # preconditions after all
             _GUARDS.extend(pending)
         _session.pending_mask_guards.clear()
+        if _session.recurrences:
+            # folded loops traced through featherweight head symbols;
+            # the certificate gets the real held Iterate inlined
+            rec_map = dict(_session.recurrences)
+            if hasattr(out, "formula") and isinstance(out.formula, sympy.Basic):
+                out.formula = out.formula.xreplace(rec_map)
+            for i, g in enumerate(_GUARDS):
+                if isinstance(g, sympy.Basic) and g.free_symbols & set(rec_map):
+                    _GUARDS[i] = g.xreplace(rec_map)
         out.preconditions = sympy.And(*_GUARDS) if _GUARDS else sympy.true
         records = list(_OPAQUE)
         if _session.hashed:
@@ -295,6 +304,10 @@ def _recompress(formulas):
     element (exact sympy equality); no proof, no fold: returns None and
     the caller keeps the honest unrolled Array. Tries strides 1..3.
     """
+    if any(sympy.count_ops(f) > 1500 for f in formulas):
+        # proof-by-expand is superlinear; on big elements (folded-loop
+        # results embedding recurrence state) the honest Array wins
+        return None
     if len(formulas) < 2:
         return None
     i = axis_idx(0)
