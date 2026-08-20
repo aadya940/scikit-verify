@@ -1044,6 +1044,17 @@ class Pair:
             if isinstance(e, sympy.Basic):
                 labels.append(f"formula[{k}]" if len(elements) > 1 else "formula")
                 exprs.append(e)
+        # preconditions one conjunct per line: an And is a LIST of
+        # facts, and a list reads as lines; conjuncts join the cse
+        # pass so they share t-names with the formula
+        pre = getattr(self, "preconditions", None)
+        if isinstance(pre, sympy.Basic) and pre is not sympy.true:
+            conjuncts = (
+                list(pre.args) if isinstance(pre, sympy.And) else [pre]
+            )
+            for k, c in enumerate(conjuncts):
+                labels.append(f"assumes[{k}]")
+                exprs.append(c)
         if not exprs:
             return str(f)
         subs, reduced = sympy.cse(
