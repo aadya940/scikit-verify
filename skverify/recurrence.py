@@ -533,9 +533,14 @@ def _advance(rec, body, sig):
     # which meant the state BEFORE this body ran: pin them to that
     # iteration's held object now, or the harvest inline would
     # wrongly give every guard the final state
-    prev = {
-        sym: _session.recurrences[sym] for sym in rec["head_syms"]
-    }
+    prev = {}
+    for sym in rec["head_syms"]:
+        # per-iteration SYMBOL, not the held object: guards stay one
+        # line each, the definitions map carries each state once
+        at = sympy.Symbol(f"{sym.name}_at{m}", real=True)
+        if at not in _session.recurrences:
+            _session.recurrences[at] = _session.recurrences[sym]
+        prev[sym] = at
     for i in range(rec["adv_guard_mark"], len(_session.guards)):
         g = _session.guards[i]
         if isinstance(g, sympy.Basic) and g.free_symbols & set(prev):
@@ -613,6 +618,11 @@ def _repair(rec, keep_ids=(), lazy=False):
         f = p.formula
         if isinstance(f, sympy.Basic) and f.free_symbols & keys:
             p.formula = fix(f)
+    if lazy:
+        # fold SUCCEEDED: guards keep their probe symbols and the
+        # definitions map carries every meaning -- eager insertion
+        # here would rebuild exactly the giant trees the fold avoids
+        return
     # only guards recorded since the plant can hold probe symbols
     start = rec.get("plant_guard_mark", 0)
     for i in range(start, len(_session.guards)):

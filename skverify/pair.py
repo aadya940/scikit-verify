@@ -992,6 +992,53 @@ class Pair:
         out = self[...] if np.ndim(self.value) else self
         return [out[k] for k in range(len(np.asarray(self.value)))]
 
+    definitions = {}  # folded-loop meanings; set per-result by to_sympy
+
+    def expand_formula(self):
+        """The certificate's formula with every folded definition
+        inlined: the monolithic expression for machine consumers
+        (lambdify, equivalence checking). Can be very large."""
+        from .recurrence import inline
+
+        if not self.definitions:
+            return self.formula
+        f = self.formula
+        if isinstance(f, sympy.NDimArray):
+            return sympy.ImmutableDenseNDimArray(
+                [inline(e, self.definitions) for e in f], f.shape
+            )
+        if isinstance(f, sympy.Basic):
+            return inline(f, self.definitions)
+        return f
+
+    def pretty(self):
+        """The human view: formula and definitions with shared
+        subexpressions cse-named, one small block per definition."""
+        parts = []
+        exprs = []
+        labels = []
+        for sym, d in self.definitions.items():
+            labels.append(str(sym))
+            exprs.append(d)
+        f = self.formula
+        elements = (
+            list(f) if isinstance(f, sympy.NDimArray) else [f]
+        )
+        for k, e in enumerate(elements):
+            if isinstance(e, sympy.Basic):
+                labels.append(f"formula[{k}]" if len(elements) > 1 else "formula")
+                exprs.append(e)
+        if not exprs:
+            return str(f)
+        subs, reduced = sympy.cse(
+            exprs, symbols=sympy.numbered_symbols("t"), order="none"
+        )
+        for sym, e in subs:
+            parts.append(f"{sym} = {e}")
+        for label, e in zip(labels, reduced):
+            parts.append(f"{label} = {e}")
+        return "\n".join(parts)
+
     @property
     def base(self):
         # memory-ownership bookkeeping, not math: view checks read it

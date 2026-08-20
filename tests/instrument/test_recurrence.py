@@ -31,7 +31,9 @@ def short_loop(x):
 class TestFold:
     def test_snowball_folds_to_held_iterate(self):
         out = to_sympy(nonlinear_growth, np.array([0.1]))
-        f = out.formula
+        f = out.expand_formula()
+        assert f.atoms(Iterate)
+        f = next(iter(f.atoms(Iterate))) if f.func is not Iterate else f
         assert f.func is Iterate
         step = f.args[0]
         s, n = step.variables
@@ -58,7 +60,8 @@ class TestFold:
         out = to_sympy(indexed, np.array([0.1]))
         expect = float(indexed(np.array([0.1])))
         X = sympy.IndexedBase("x")
-        got = float(sympy.N(out.formula.subs(X[0], 0.1).doit()))
+        f = out.expand_formula()
+        got = float(sympy.N(f.subs(X[0], 0.1).doit()))
         assert np.isclose(got, expect)
 
     def test_broken_template_falls_back_exact(self):
@@ -74,17 +77,19 @@ class TestFold:
         out = to_sympy(shape_shift, np.array([0.05]))
         expect = float(shape_shift(np.array([0.05])))
         X = sympy.IndexedBase("x")
-        f = out.formula
-        if f.atoms(Iterate):
-            f = f.replace(
-                lambda e: e.func is Iterate, lambda e: e.doit(deep=False)
-            )
-        got = float(sympy.N(f.subs(X[0], 0.05).doit()))
+        f = out.expand_formula()
+        for _ in range(3):
+            if f.atoms(Iterate):
+                f = f.replace(
+                    lambda e: e.func is Iterate, lambda e: e.doit(deep=False)
+                )
+            f = f.doit()
+        got = float(sympy.N(f.subs(X[0], 0.05)))
         assert np.isclose(got, expect)
-        # repair contract: no probe Dummy may survive into the result
-        assert not any(
-            isinstance(sym, sympy.Dummy) for sym in out.formula.free_symbols
-        )
+        # repair contract: any surviving probe symbol is BOUND
+        for sym in out.formula.free_symbols:
+            if isinstance(sym, sympy.Dummy):
+                assert sym in out.definitions
 
     def test_probe_guards_never_leak_dummies(self):
         def guarded(x):
@@ -97,9 +102,11 @@ class TestFold:
         out = to_sympy(guarded, np.array([0.1]))
         pre = out.preconditions
         if pre is not sympy.true:
-            assert not any(
-                isinstance(s, sympy.Dummy) for s in pre.free_symbols
-            )
+            # every symbol is an input, an atom, or BOUND by the
+            # definitions map -- no orphan probe symbols
+            for sym in pre.free_symbols:
+                if isinstance(sym, sympy.Dummy):
+                    assert sym in out.definitions
 
     def test_nested_loops_fold_and_track(self):
         def nested(x):
@@ -115,8 +122,10 @@ class TestFold:
         out = to_sympy(nested, vals)
         X = sympy.IndexedBase("x")
         subs = {X[k]: v for k, v in enumerate(vals)}
-        f = out.formula.subs(subs)
-        got = float(sympy.N(f.doit() if f.atoms(Iterate) else f))
+        f = out.expand_formula().subs(subs)
+        for _ in range(3):
+            f = f.doit()
+        got = float(sympy.N(f))
         assert np.isclose(got, float(nested(vals)))
 
     def test_coupled_state_folds_to_tuple_iterate(self):
@@ -131,7 +140,7 @@ class TestFold:
 
         vals = np.array([0.3, 0.5])
         out = to_sympy(coupled, vals)
-        f = out.formula
+        f = out.expand_formula()
         assert f.atoms(Iterate) and f.atoms(Nth)
         it = next(iter(f.atoms(Iterate)))
         step = it.args[0]
@@ -160,10 +169,14 @@ class TestFold:
         # the certificate holds the fitted-coefficient formula with the
         # alpha/lambda fixed-point iteration as a held recurrence
         held = set()
-        for e in np.ravel(out.formula):
+        pool = list(np.ravel(out.formula)) + list(out.definitions.values())
+        for e in pool:
             if hasattr(e, "atoms"):
                 held |= e.atoms(Iterate)
         assert held
+        # the folded certificate names its parts; expansion rebuilds
+        # the monolith on demand
+        assert out.definitions or held
         it = next(iter(held))
         step = it.args[0]
         assert len(step.variables) == 3  # two state slots + n

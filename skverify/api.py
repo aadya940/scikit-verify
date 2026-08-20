@@ -91,25 +91,37 @@ def to_sympy(fn, *args, **kwargs):
             _GUARDS.extend(pending)
         _session.pending_mask_guards.clear()
         if _session.recurrences:
-            # folded loops traced through featherweight head symbols;
-            # the certificate gets the real held objects inlined
+            # folded loops traced through featherweight symbols whose
+            # meanings live in the definitions map. Small certificates
+            # inline (a toy loop should read as its Iterate directly);
+            # large ones STAY FOLDED -- the lemma structure is the
+            # readable form, and xreplace(out.definitions) rebuilds
+            # the monolith for anyone who wants it
             from .recurrence import inline
 
             rec_map = dict(_session.recurrences)
+            total = sum(sympy.count_ops(v) for v in rec_map.values())
             if hasattr(out, "formula") and isinstance(out.formula, sympy.Basic):
-                f = out.formula
-                if isinstance(f, sympy.NDimArray):
-                    # inline per element: the container itself must be
-                    # rebuilt EVALUATED or its internal loop size stays
-                    # an unevaluated Mul and printing breaks
-                    out.formula = sympy.ImmutableDenseNDimArray(
-                        [inline(e, rec_map) for e in f], f.shape
-                    )
-                else:
-                    out.formula = inline(f, rec_map)
-            for i, g in enumerate(_GUARDS):
-                if isinstance(g, sympy.Basic):
-                    _GUARDS[i] = inline(g, rec_map)
+                total += sympy.count_ops(out.formula)
+            if total < 2000:
+                if hasattr(out, "formula") and isinstance(out.formula, sympy.Basic):
+                    f = out.formula
+                    if isinstance(f, sympy.NDimArray):
+                        # per element: the container must be rebuilt
+                        # EVALUATED or its loop size stays a held Mul
+                        out.formula = sympy.ImmutableDenseNDimArray(
+                            [inline(e, rec_map) for e in f], f.shape
+                        )
+                    else:
+                        out.formula = inline(f, rec_map)
+                for i, g in enumerate(_GUARDS):
+                    if isinstance(g, sympy.Basic):
+                        _GUARDS[i] = inline(g, rec_map)
+                out.definitions = {}
+            else:
+                out.definitions = rec_map
+        else:
+            out.definitions = {}
         out.preconditions = sympy.And(*_GUARDS) if _GUARDS else sympy.true
         records = list(_OPAQUE)
         if _session.hashed:
