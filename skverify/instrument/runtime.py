@@ -314,6 +314,13 @@ def _skv_float(x):
     return float(x)
 
 
+def _skv_clip(x, min=None, max=None, a_min=None, a_max=None, **kwargs):
+    """clip by any spelling (xp.clip min/max, np.clip a_min/a_max)."""
+    lo = min if min is not None else a_min
+    hi = max if max is not None else a_max
+    return np.clip(x, lo, hi)
+
+
 def _skv_getitem(obj, key):
     """Subscript with selection semantics for traced keys.
 

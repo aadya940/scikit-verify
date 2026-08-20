@@ -82,6 +82,39 @@ def _where(cond, a=None, b=None):
         # single-arg where is nonzero-position discovery: a concrete
         # fact about this trace, like searchsorted's bisection
         return np.where(np.asarray(Pair._value_of(cond), dtype=bool))
+    if any(_is_bag(x) for x in (cond, a, b)):
+        # decompressed operands have no single indexed pattern; the
+        # selection is still exact per element
+        cv = np.asarray(Pair._value_of(cond))
+        shape = np.broadcast_shapes(
+            np.shape(cv), np.shape(Pair._value_of(a)), np.shape(Pair._value_of(b))
+        )
+
+        def elem(x, idx):
+            arr = np.broadcast_to(np.asarray(x, dtype=object) if _is_bag(x) or isinstance(x, np.ndarray) else np.asarray(Pair._value_of(x)), shape) if not isinstance(x, Pair) else None
+            if isinstance(x, Pair):
+                return x[idx] if x._axis_bounds else x
+            return arr[idx]
+
+        out = np.empty(shape, dtype=object)
+        for idx in np.ndindex(shape):
+            c_e, a_e, b_e = (elem(x, idx) for x in (cond, a, b))
+            c_f = Pair._formula_of(c_e)
+            if not isinstance(
+                c_f,
+                (sympy.logic.boolalg.Boolean, sympy.core.relational.Relational),
+            ):
+                c_f = sympy.Ne(c_f, 0)
+            out[idx] = Pair(
+                np.where(
+                    Pair._value_of(c_e), Pair._value_of(a_e), Pair._value_of(b_e)
+                )[()],
+                sympy.Piecewise(
+                    (Pair._formula_of(a_e), c_f), (Pair._formula_of(b_e), True)
+                ),
+                None,
+            )
+        return out
     domain = Pair._merge_domains(
         Pair._domain_of(cond), Pair._domain_of(a), Pair._domain_of(b)
     )
@@ -221,10 +254,23 @@ def _sum_plain(a, axis=None, **kwargs):
         return a  # the sum of a scalar is itself
     if not isinstance(a, Pair):
         if isinstance(a, np.ndarray) and a.dtype == object:
-            total = a.ravel()[0]
-            for e in a.ravel()[1:]:
-                total = total + e  # element dunders keep the trace
-            return total
+            if axis is None or a.ndim == 1:
+                total = a.ravel()[0]
+                for e in a.ravel()[1:]:
+                    total = total + e  # element dunders keep the trace
+                return total
+            # per-axis on a bag: sum each 1-D slice along the axis
+            ax = axis % a.ndim
+            out_shape = a.shape[:ax] + a.shape[ax + 1 :]
+            out = np.empty(out_shape, dtype=object)
+            for oidx in np.ndindex(out_shape):
+                idx = oidx[:ax] + (slice(None),) + oidx[ax:]
+                lane = a[idx]
+                total = lane[0]
+                for e in lane[1:]:
+                    total = total + e
+                out[oidx] = total
+            return out
         return np.sum(np.asarray(a))
 
     a = Pair(

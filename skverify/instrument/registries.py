@@ -60,7 +60,24 @@ CONCRETE_CALLABLES = {"find_interval"}
 # numpy set-routines: which values exist / where they appear are facts
 # about THIS trace (label inventories), not mathematics -- run on
 # concrete values wherever the call resolves, body or dispatcher
-CONCRETE_BY_NAME = {"in1d", "_in1d", "setdiff1d", "union1d", "intersect1d", "isin", "unique"}
+CONCRETE_BY_NAME = {
+    "in1d",
+    "_in1d",
+    "setdiff1d",
+    "union1d",
+    "intersect1d",
+    "isin",
+    "unique",
+    # sparse construction of index/indicator structure is bookkeeping
+    # (data-as-address); compiled scipy silently garbles traced
+    # indices, so the whole construction runs on values
+    "csr_matrix",
+    "csc_matrix",
+    "coo_matrix",
+    "csr_array",
+    "csc_array",
+    "coo_array",
+}
 # compiled routines that RETURN through array out-parameters (scipy's
 # Cython convention); value = argument positions of the out arrays
 OPAQUE_OUT = {"_coloc": (3,), "qr_reduce": (0, 3)}

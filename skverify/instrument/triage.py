@@ -69,15 +69,24 @@ def _skv_maybe(fn):
         # facts about this trace, and their bodies (sorting, boolean
         # index tricks) are hostile to traced operands
         def concrete_inventory(*args, **kwargs):
-            vals = [
-                np.asarray(Pair._value_of(a), dtype=float)
-                if _traced(a) or (
-                    isinstance(a, np.ndarray) and a.dtype == object
-                )
-                else a
-                for a in args
-            ]
-            return fn(*vals, **kwargs)
+            from ..coercion import value_of
+
+            def deep(a):
+                if isinstance(a, (list, tuple)):
+                    return type(a)(deep(e) for e in a)
+                if isinstance(a, np.ndarray) and a.dtype == object:
+                    # let numpy INFER the dtype: an int-valued index
+                    # array must stay integer (scipy's sparse ctor
+                    # silently zeroes on float indices)
+                    vals = [value_of(e) for e in a.ravel()]
+                    return np.array(vals).reshape(a.shape)
+                v = value_of(a)
+                if isinstance(v, np.ndarray) and v.dtype == object:
+                    vals = [value_of(e) for e in v.ravel()]
+                    return np.array(vals).reshape(v.shape)
+                return v
+
+            return fn(*[deep(a) for a in args], **kwargs)
 
         return concrete_inventory
     self_arr = getattr(fn, "__self__", None)

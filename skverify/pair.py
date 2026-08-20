@@ -985,6 +985,18 @@ class Pair:
 
     # facts about the concrete lane; some library bodies read these
     # before doing any math
+    def isnan(self):
+        # numpy's object-dtype loop convention: validation checks are
+        # concrete facts about this trace, not mathematics (same
+        # doctrine as the CONCRETE registry names)
+        return np.isnan(np.asarray(Pair._value_of(self.value)))
+
+    def isinf(self):
+        return np.isinf(np.asarray(Pair._value_of(self.value)))
+
+    def isfinite(self):
+        return np.isfinite(np.asarray(Pair._value_of(self.value)))
+
     def fill(self, value):
         # ndarray.fill is a whole-array overwrite: both lanes at once
         self[...] = value

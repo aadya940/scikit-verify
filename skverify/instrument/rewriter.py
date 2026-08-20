@@ -232,6 +232,16 @@ class _Rewriter(ast.NodeTransformer):
                 args=[node.func] + node.args,
                 keywords=node.keywords,
             )
+        elif name == "clip":
+            # array_api_compat reimplements clip with empty-buffer
+            # writes and isnan gates that detonate on traced values;
+            # np.clip's exact Min/Max entry is the same mathematics
+            self.sites.append("clip -> np.clip (exact Min/Max)")
+            node = ast.Call(
+                func=ast.Name(id="__skv_clip__", ctx=ast.Load()),
+                args=node.args,
+                keywords=node.keywords,
+            )
         elif name == "array_namespace":
             self.sites.append("array_namespace -> numpy (compat layer skipped)")
             node.func = ast.Name(id="__skv_namespace__", ctx=ast.Load())
