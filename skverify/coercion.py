@@ -45,10 +45,27 @@ def value_of(x):
         Plain numeric data. Pairs contribute their value lane;
         containers are rebuilt with values in the Pairs' places.
     """
+    import weakref
+
     from .pair import Pair
 
     if isinstance(x, Pair):
-        return x.value
+        v = x.value
+        if isinstance(v, np.ndarray) and isinstance(x.formula, sympy.Basic):
+            # remember which buffer carried which formula: an opaque
+            # call receiving this exact array later can name its
+            # operand symbolically instead of as an anonymous const.
+            # Identity is verified through the weakref at lookup, so
+            # a recycled id can never alias a different array.
+            if len(_session.value_origins) < 4096:
+                try:
+                    _session.value_origins[id(v)] = (
+                        weakref.ref(v),
+                        x.formula,
+                    )
+                except TypeError:
+                    pass
+        return v
     if isinstance(x, np.ndarray) and x.dtype == object:
         elems = x.ravel()
         if any(isinstance(e, Pair) for e in elems):

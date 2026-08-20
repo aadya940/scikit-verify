@@ -109,6 +109,7 @@ def _opaque_call_impl(Pair, func, args, kwargs):
             f"{func.__name__} mutated a traced input in place"
         )
     formulas = []
+    notes = []
     n_const = 0
     for a in args:
         if isinstance(a, Pair):
@@ -116,9 +117,27 @@ def _opaque_call_impl(Pair, func, args, kwargs):
         elif np.isscalar(a):
             formulas.append(sympy.sympify(a))
         elif isinstance(a, np.ndarray):
-            # a concrete operand: named, so the formula never hides it
-            formulas.append(sympy.Symbol(f"const{n_const}"))
-            n_const += 1
+            origin = _session.value_origins.get(id(a))
+            if origin is not None and origin[0]() is a:
+                # this exact buffer was extracted from a traced value:
+                # the operand IS that formula (identity-verified, not
+                # value-matched -- no guessing)
+                formulas.append(origin[1])
+            else:
+                # a concrete operand: named, so the formula never hides
+                # it. If it bitwise-equals a named input, DISCLOSE the
+                # observed equality -- an alias through a foreign copy
+                # is certificate content, but as an observation, never
+                # as a silent substitution
+                formulas.append(sympy.Symbol(f"const{n_const}"))
+                for iname, ival in getattr(_session, "inputs", {}).items():
+                    if a.shape == ival.shape and np.array_equal(a, ival):
+                        notes.append(
+                            f"const{n_const} == {iname} "
+                            "(bitwise-equal at trace time)"
+                        )
+                        break
+                n_const += 1
     # f2py fortran objects report __name__ as "function dgbsv":
     # keep the identifier part only
     fname = getattr(func, "__name__", "opaque").split()[-1]
@@ -157,7 +176,7 @@ def _opaque_call_impl(Pair, func, args, kwargs):
                 outs.append(res)
         _OPAQUE.append(
             check_call(fname, pristine, result)
-            + ((f"{prefix}_*", str(call)),)
+            + ((f"{prefix}_*", "; ".join([str(call)] + notes)),)
         )
         return tuple(outs)
     shape = np.shape(result) if hasattr(result, "shape") else ()
@@ -172,7 +191,8 @@ def _opaque_call_impl(Pair, func, args, kwargs):
         formula = call
         domain = None
     _OPAQUE.append(
-        check_call(fname, pristine, result) + ((str(formula), str(call)),)
+        check_call(fname, pristine, result)
+        + ((str(formula), "; ".join([str(call)] + notes)),)
     )
     return Pair(result, formula, domain=domain, steps=Pair._steps_of(*args))
 

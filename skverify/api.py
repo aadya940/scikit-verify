@@ -188,6 +188,11 @@ def _wrap(name, val):
         return val
     if np.isscalar(val):
         return Pair(val, sympy.Symbol(name, real=True))
+    if isinstance(val, np.ndarray):
+        # remembered by NAME: an opaque atom receiving a foreign copy
+        # of this input can disclose the observed equality
+        _session.inputs = getattr(_session, "inputs", {})
+        _session.inputs[name] = np.array(val, copy=True)
     if hasattr(val, "to_numpy") and not isinstance(val, np.ndarray):
         # a DataFrame or Series: welcome it, keep the parameter's name
         val = val.to_numpy(dtype=float)
