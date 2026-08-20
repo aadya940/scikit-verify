@@ -14,12 +14,18 @@ products are not bit-stable across association orders). Instead the
 folder PLANTS an opaque state symbol: before a probe body runs, the
 carried Pair's formula becomes a fresh Dummy, so the body's own
 execution writes the step template directly in terms of that symbol.
-Two probe bodies give two templates; integer drift between them
-generalizes to the iteration index (``_generalize``). From then on
-each body must reproduce ``template(state=Iterate(...), n=count)``
-EXACTLY -- structural equality, no tolerance; ``Iterate`` is an
-opaque Function node, so no distribution can smear it. A body that
-stops matching stops the fold (formulas stay exact, merely eager).
+Two probe bodies give two templates; integer and float drift between
+them generalizes to the iteration index (``_generalize``).
+
+Verification is by PATH, not by formula: the body is deterministic
+code, so an iteration that fires the same branch guards, seals the
+same opaque calls, and builds the same operation sequence as the
+probe iteration computed the same template. Each subsequent body's
+signature is compared to the probe's; on a match the carried value
+(identified by its position in the deterministic op sequence) becomes
+``Iterate(step, init, count+1)``. No structural formula matching, no
+float bit-stability concerns. A body whose signature differs stops
+the fold; eager exact formulas resume.
 
 Folding engages only past ``FOLD_START`` iterations: short loops keep
 today's fully unrolled formulas, which existing certificates pin.
@@ -79,6 +85,29 @@ def _live(refs):
     return [p for p in (r() for r in refs) if p is not None]
 
 
+_ATOM_INDEX = __import__("re").compile(r"_\d+")
+
+
+def _signature(body, guards_from, opaque_from):
+    """The body's path fingerprint: operation sequence, branch guard
+    shapes, and opaque-call names (iteration indices stripped). Equal
+    fingerprints on deterministic code mean equal dataflow."""
+    ops = tuple(
+        p.formula.func.__name__
+        if isinstance(p.formula, sympy.Basic)
+        else type(p.formula).__name__
+        for p in body
+    )
+    guards = tuple(
+        g.func.__name__ if isinstance(g, sympy.Basic) else str(g)
+        for g in _session.guards[guards_from:]
+    )
+    atoms = tuple(
+        _ATOM_INDEX.sub("_n", str(rec[0])) for rec in _session.opaque[opaque_from:]
+    )
+    return (ops, guards, atoms)
+
+
 def _last_symbolic(pairs, needs=None):
     """The newest pair carrying a real formula (optionally one that
     references ``needs``): the presumed loop-carried value."""
@@ -99,6 +128,8 @@ def on_loop_iter(loop_id, index):
         _session.loop_fold[loop_id] = {
             "phase": "watch",
             "planted": [],  # pairs since first plant, for repair
+            "guard_mark": len(_session.guards),
+            "opaque_mark": len(_session.opaque),
         }
         _session.loop_new.clear()
         return
@@ -110,6 +141,9 @@ def on_loop_iter(loop_id, index):
     _session.loop_new.clear()
     if rec["phase"] != "watch":
         rec["planted"].extend(weakref.ref(p) for p in body)
+    sig = _signature(body, rec["guard_mark"], rec["opaque_mark"])
+    rec["guard_mark"] = len(_session.guards)
+    rec["opaque_mark"] = len(_session.opaque)
     phase = rec["phase"]
     if phase == "watch":
         if index >= FOLD_START - 1:
@@ -117,9 +151,9 @@ def on_loop_iter(loop_id, index):
     elif phase == "probe1":
         _extract_first(rec, body)
     elif phase == "probe2":
-        _extract_second(rec, body)
+        _extract_second(rec, body, sig)
     elif phase == "carry":
-        _advance(rec, body)
+        _advance(rec, body, sig)
 
 
 def on_loop_end(loop_id):
@@ -130,7 +164,7 @@ def on_loop_end(loop_id):
         return
     if rec["phase"] == "carry":
         # the final body has no following marker: collapse it here
-        _advance(rec, body)
+        _advance(rec, body, _signature(body, rec["guard_mark"], rec["opaque_mark"]))
     elif rec["phase"] in ("probe1", "probe2"):
         _repair(rec)  # loop ended mid-probe: restore eager formulas
 
@@ -168,7 +202,7 @@ def _extract_first(rec, body):
     q._fsize = 4
 
 
-def _extract_second(rec, body):
+def _extract_second(rec, body, sig):
     from .derivation import _generalize
 
     r = _last_symbolic(body, needs=rec["s_b"])
@@ -190,33 +224,27 @@ def _extract_second(rec, body):
     rec.update(
         phase="carry",
         step=step,
-        template=template,
-        n_sym=n,
         count=2,
         head=weakref.ref(r),
+        sig=sig,
+        # identity scan: list.index would compare Pairs with ==,
+        # minting mask Pairs whose bool() records spurious guards
+        carry_pos=next(i for i, q2 in enumerate(body) if q2 is r),
     )
     # earlier pairs may still hold probe symbols: restore their eager
     # meaning so nothing outside the fold ever sees a Dummy
     _repair(rec, keep_head=r)
 
 
-def _advance(rec, body):
-    head = rec["head"]()
-    if head is None:
-        rec["phase"] = "broken"
-        return
-    m = rec["count"]
-    expected = rec["template"].xreplace(
-        {rec["s_a"]: head.formula, rec["n_sym"]: sympy.Integer(m)}
-    )
-    p_new = None
-    for p in reversed(body):
-        if isinstance(p.formula, sympy.Basic) and p.formula == expected:
-            p_new = p
-            break
-    if p_new is None:
+def _advance(rec, body, sig):
+    """Same path fingerprint as the probe body => same deterministic
+    dataflow => the template applies; the carried value sits at the
+    same position in the op sequence. No formula matching."""
+    if sig != rec["sig"] or rec["carry_pos"] >= len(body):
         rec["phase"] = "broken"  # eager formulas remain exact; fold ends
         return
+    p_new = body[rec["carry_pos"]]
+    m = rec["count"]
     p_new.formula = Iterate(rec["step"], rec["orig"], sympy.Integer(m + 1))
     p_new._fsize = 64
     rec["count"] = m + 1
