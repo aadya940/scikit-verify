@@ -1049,10 +1049,30 @@ class Pair:
         subs, reduced = sympy.cse(
             exprs, symbols=sympy.numbered_symbols("t"), order="none"
         )
-        for sym, e in subs:
-            parts.append(f"{sym} = {e}")
-        for label, e in zip(labels, reduced):
-            parts.append(f"{label} = {e}")
+        import textwrap
+
+        rows = [(str(sym), str(e)) for sym, e in subs]
+        rows.append((None, None))  # section break
+        rows.extend(
+            (label, str(e)) for label, e in zip(labels, reduced)
+        )
+        width = max(
+            (len(l) for l, _ in rows if l is not None), default=0
+        )
+        for label, rhs in rows:
+            if label is None:
+                parts.append("")
+                continue
+            lead = f"{label.ljust(width)} = "
+            wrapped = textwrap.wrap(
+                rhs,
+                width=100,
+                initial_indent=lead,
+                subsequent_indent=" " * (width + 3),
+                break_long_words=False,
+                break_on_hyphens=False,
+            )
+            parts.extend(wrapped if wrapped else [lead])
         return "\n".join(parts)
 
     @property
