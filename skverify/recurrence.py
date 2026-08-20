@@ -241,3 +241,9 @@ def _repair(rec, keep_head=None):
         f = p.formula
         if isinstance(f, sympy.Basic) and f.free_symbols & set(subs):
             p.formula = f.xreplace(subs).xreplace(subs)
+    # guards recorded during probe bodies carry the probe symbols too:
+    # a Dummy in .preconditions would be an unbound symbol in a
+    # certificate. Rewrite them to their eager meanings in place.
+    for i, g in enumerate(_session.guards):
+        if isinstance(g, sympy.Basic) and g.free_symbols & set(subs):
+            _session.guards[i] = g.xreplace(subs).xreplace(subs)

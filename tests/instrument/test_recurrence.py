@@ -84,3 +84,36 @@ class TestFold:
         assert not any(
             isinstance(sym, sympy.Dummy) for sym in out.formula.free_symbols
         )
+
+    def test_probe_guards_never_leak_dummies(self):
+        def guarded(x):
+            c = x[0]
+            for _ in range(FOLD_START + 6):
+                if c > 0:  # a guard every iteration, incl. probe bodies
+                    c = c + 0.1 * c * c
+            return c
+
+        out = to_sympy(guarded, np.array([0.1]))
+        pre = out.preconditions
+        if pre is not sympy.true:
+            assert not any(
+                isinstance(s, sympy.Dummy) for s in pre.free_symbols
+            )
+
+    def test_nested_loops_fold_and_track(self):
+        def nested(x):
+            t = x[0]
+            for _ in range(FOLD_START + 4):
+                inner = 0.0
+                for j in range(3):
+                    inner = inner + x[j]
+                t = t + 0.1 * t * inner
+            return t
+
+        vals = np.array([0.1, 0.2, 0.3, 0.4])
+        out = to_sympy(nested, vals)
+        X = sympy.IndexedBase("x")
+        subs = {X[k]: v for k, v in enumerate(vals)}
+        f = out.formula.subs(subs)
+        got = float(sympy.N(f.doit() if f.atoms(Iterate) else f))
+        assert np.isclose(got, float(nested(vals)))
