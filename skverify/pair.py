@@ -64,6 +64,26 @@ class Pair:
         # ops ran.
         self._parents = tuple(steps or ())
         self._seq = _session.next_seq()  # creation order; keys into the loop event log
+        # O(1) size estimate: parents' sizes sum (an overestimate under
+        # sharing, which is the safe direction for a tripwire). Walking
+        # the real tree would itself cost the blowup being detected.
+        self._fsize = 1 + sum(
+            getattr(x, "_fsize", 1) for x in self._parents
+        )
+        if _session.loop_stack:
+            from .recurrence import register_pair
+
+            register_pair(self)
+        elif self._grown():
+            # growth tripwire: an unrolling loop on the PLAIN path (no
+            # markers, no folder) snowballs without bound. Blowup is a
+            # wall like any other: raising sends the trace down the
+            # instrumented retry, where loop markers fire and the
+            # recurrence folder keeps formulas finite.
+            raise NotImplementedError(
+                "formula grows without bound (unrolled iteration); "
+                "retrying instrumented so the loop folds"
+            )
 
         if domain is not None and len(domain) == 0:
             domain = None  # 0-d allocation: a scalar
@@ -71,6 +91,11 @@ class Pair:
             domain = (domain,)
 
         self._axis_bounds = domain  # for ndarray
+
+    def _grown(self):
+        from .recurrence import GROWTH_LIMIT
+
+        return self._fsize > GROWTH_LIMIT
 
     def _repr_latex_(self):
         # Jupyter renders the formula as mathematics
