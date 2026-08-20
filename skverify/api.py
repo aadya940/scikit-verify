@@ -119,7 +119,32 @@ def to_sympy(fn, *args, **kwargs):
                         _GUARDS[i] = inline(g, rec_map)
                 out.definitions = {}
             else:
-                out.definitions = rec_map
+                # only definitions the certificate actually REACHES:
+                # the transitive closure from formula and guards. The
+                # repair map holds every probe symbol ever planted;
+                # unreferenced ones are internal bookkeeping, not
+                # certificate content.
+                roots = set()
+                if hasattr(out, "formula"):
+                    f = out.formula
+                    elements = (
+                        list(f) if isinstance(f, sympy.NDimArray) else [f]
+                    )
+                    for e in elements:
+                        if isinstance(e, sympy.Basic):
+                            roots |= e.free_symbols
+                for g in _GUARDS:
+                    if isinstance(g, sympy.Basic):
+                        roots |= g.free_symbols
+                needed = {}
+                frontier = roots & set(rec_map)
+                while frontier:
+                    sym = frontier.pop()
+                    if sym in needed:
+                        continue
+                    needed[sym] = rec_map[sym]
+                    frontier |= rec_map[sym].free_symbols & set(rec_map) - set(needed)
+                out.definitions = needed
         else:
             out.definitions = {}
         out.preconditions = sympy.And(*_GUARDS) if _GUARDS else sympy.true
