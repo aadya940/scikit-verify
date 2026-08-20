@@ -44,6 +44,21 @@ from .derivation import (  # noqa: F401  (historical import surface)
 )
 
 
+class CertificateText(str):
+    """pretty() output: a plain string everywhere, LaTeX in notebooks.
+
+    print() and str() behave as always; Jupyter finds _repr_latex_ and
+    typesets the same rows as an aligned block. Oversized blocks fall
+    back to text rather than freezing MathJax."""
+
+    _latex = None
+
+    def _repr_latex_(self):
+        if self._latex and len(self._latex) < 200_000:
+            return self._latex
+        return None
+
+
 class Pair:
     """Convert math and array style operations to SymPy
     expressions.
@@ -1110,7 +1125,16 @@ class Pair:
                 break_on_hyphens=False,
             )
             parts.extend(wrapped if wrapped else [lead])
-        return "\n".join(parts)
+        tex_rows = [(str(sym), e) for sym, e in subs] + list(
+            zip(labels, reduced)
+        )
+        tex = "".join(
+            r"\text{%s} &= %s \\" % (lbl, sympy.latex(e))
+            for lbl, e in tex_rows
+        )
+        out = CertificateText("\n".join(parts))
+        out._latex = r"\begin{aligned}" + tex + r"\end{aligned}"
+        return out
 
     @property
     def base(self):
