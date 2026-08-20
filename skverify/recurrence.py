@@ -205,12 +205,12 @@ def _plantable(pair):
     return None
 
 
-def _probe_for(kind, pos, round_tag="a"):
+def _probe_for(kind, base, round_tag="pre"):
     from .helpers import axis_idx
 
     # round tag in the NAME: round-one and round-two probes at the
     # same position must print distinguishably in certificates
-    label = sympy.Dummy(f"state{pos}{round_tag}")
+    label = sympy.Dummy(f"{base}_{round_tag}")
     if kind == "scalar":
         return label, label
     return label, sympy.IndexedBase(label)[axis_idx(0)]
@@ -237,7 +237,24 @@ def _subst_slot(expr, label, value):
     return expr.xreplace({label: value})
 
 
-def on_loop_iter(loop_id, index):
+def _slot_name(rec, pos, default):
+    """The program's own variable name for the pair at ``pos``, or a
+    positional default. Names come from the loop frame's locals."""
+    return rec.get("names", {}).get(pos, default)
+
+
+def _public(base):
+    """A certificate symbol name not colliding with an existing one."""
+    taken = {str(k) for k in _session.recurrences}
+    name = base
+    k = 2
+    while name in taken:
+        name = f"{base}{k}"
+        k += 1
+    return name
+
+
+def on_loop_iter(loop_id, index, names=None):
     """Fold hook at the top of each body; the Pairs recorded since the
     previous marker belong to iteration ``index - 1``."""
     if index == 0:
@@ -256,6 +273,12 @@ def on_loop_iter(loop_id, index):
         return
     body = _live(_session.loop_new)
     _session.loop_new.clear()
+    if names:
+        # by POSITION: positions are stable across bodies, so a name
+        # learned at any marker applies to the same slot in every body
+        rec["names"] = {
+            pos: names[id(p)] for pos, p in enumerate(body) if id(p) in names
+        }
     if rec["phase"] != "watch":
         rec["planted"].extend(weakref.ref(p) for p in body)
     sig = _signature(body, rec["guard_mark"], rec["opaque_mark"])
@@ -295,7 +318,6 @@ def on_loop_end(loop_id):
         # template size. Everything downstream of the loop composes
         # with them, so they leave as light symbols too -- the real
         # expressions inline at harvest with everything else.
-        tag = len(_session.recurrences)
         for j, pos in enumerate(rec.get("positions", ())):
             if pos >= len(body):
                 continue
@@ -306,7 +328,10 @@ def on_loop_end(loop_id):
                 and not f.is_Symbol
                 and sympy.count_ops(f) > 64
             ):
-                sym = sympy.Symbol(f"loop{tag}_exit{j}", real=True)
+                sym = sympy.Symbol(
+                    _public(_slot_name(rec, pos, f"loop_{j}") + "_final"),
+                    real=True,
+                )
                 _session.recurrences[sym] = f
                 body[pos].formula = sym
                 body[pos]._fsize = 8
@@ -334,7 +359,9 @@ def _plant(rec, body, sig):
     for pos, p in enumerate(body):
         kind = _plantable(p)
         if kind:
-            label, probe = _probe_for(kind, pos)
+            label, probe = _probe_for(
+                kind, _slot_name(rec, pos, f"state{pos}")
+            )
             plants.append((pos, weakref.ref(p), label, p.formula, kind))
             rec["repairs"][label] = p.formula
             p.formula = probe
@@ -384,7 +411,9 @@ def _extract_first(rec, body, sig):
     # plant round two on the SAME positions of this body
     b_dummies = []
     for j, pos in enumerate(positions):
-        label, probe = _probe_for(kinds[j], pos, "b")
+        label, probe = _probe_for(
+            kinds[j], _slot_name(rec, pos, f"state{pos}"), "mid"
+        )
         # eager meaning of this body's slot IS its template; the
         # round-one dummies inside resolve recursively at repair time
         # (materializing them here would rebuild the giant pre-plant
@@ -446,10 +475,11 @@ def _extract_second(rec, body, sig):
         step = sympy.Lambda(tuple(s_syms) + (n,), sympy.Tuple(*exprs))
         init = rec["init"]
     held = Iterate(step, init, sympy.Integer(2))
-    loop_tag = len(_session.recurrences)
     head_syms = [
-        sympy.Symbol(f"loop{loop_tag}_{j}", real=True)
-        for j in range(len(templates))
+        sympy.Symbol(
+            _public(_slot_name(rec, pos, f"loop_{j}") + "_held"), real=True
+        )
+        for j, pos in enumerate(rec["positions"])
     ]
     for j, pos in enumerate(rec["positions"]):
         # the trace works with a FEATHERWEIGHT symbol: dragging the
@@ -510,7 +540,7 @@ def _advance(rec, body, sig):
         # stays eager and exact, and the folder goes back to watching
         # -- the loop folds as segments. Its slot values leave as
         # light symbols so downstream composition stays cheap.
-        tag = len(_session.recurrences)
+        seg = rec.get("segments", 0) + 1
         for j, pos in enumerate(rec.get("positions", ())):
             if pos >= len(body):
                 continue
@@ -521,7 +551,12 @@ def _advance(rec, body, sig):
                 and not f.is_Symbol
                 and sympy.count_ops(f) > 64
             ):
-                sym = sympy.Symbol(f"loop{tag}_seg{j}", real=True)
+                sym = sympy.Symbol(
+                    _public(
+                        _slot_name(rec, pos, f"loop_{j}") + f"_seg{seg}"
+                    ),
+                    real=True,
+                )
                 _session.recurrences[sym] = f
                 body[pos].formula = sym
                 body[pos]._fsize = 8

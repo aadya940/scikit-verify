@@ -1051,6 +1051,18 @@ class Pair:
         )
         import textwrap
 
+        # header: what was verified, what is assumed -- the reader
+        # sees the certificate's trust story before any mathematics
+        for rec in getattr(self, "unchecked", ()) or ():
+            try:
+                name, checks = rec[0], rec[1]
+                verdicts = ", ".join(f"{c}: {v}" for c, v in checks)
+                parts.append(f"# {name} -- {verdicts}")
+            except Exception:
+                continue
+        if parts:
+            parts.append("")
+
         rows = [(str(sym), str(e)) for sym, e in subs]
         rows.append((None, None))  # section break
         rows.extend(

@@ -692,6 +692,16 @@ def _average(a, axis=None, weights=None, returned=False, **kwargs):
 
 
 def _average_impl(a, axis=None, weights=None, **kwargs):
+    traced_1d = (
+        isinstance(a, Pair) and np.ndim(a.value) == 1
+    ) or (
+        isinstance(a, np.ndarray)
+        and a.dtype == object
+        and a.ndim == 1
+        and any(isinstance(e, Pair) for e in a)
+    )
+    if traced_1d and axis in (0, -1):
+        axis = None  # the only axis of a 1-D array IS the flatten axis
     if not isinstance(a, Pair):
         arr = np.asarray(a)
         if (

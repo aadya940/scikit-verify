@@ -18,6 +18,15 @@ NEUTRAL = {
     # requirements are memory bookkeeping, not math
     "require",
 }
+
+# neutral ONLY as an attribute call (np.array, xp.array): "array" is a
+# common VARIABLE name, so bare-name matching or reference swapping
+# would hijack locals. Adding "array" makes inputs survive sklearn's
+# validation (y stops becoming an anonymous array_0 atom) but opens a
+# cascade of numpy-internals walls on the deeper-traced values
+# (average with out=, umath reductions on bags) -- its own chase.
+# Empty until that chase happens.
+NEUTRAL_ATTR_ONLY = set()
 OPAQUE_CALLABLES = {
     "solve_banded",
     "solveh_banded",

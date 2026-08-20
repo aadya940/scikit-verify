@@ -14,6 +14,7 @@ from .registries import (
     CONCRETE,
     CONCRETE_CALLABLES,
     NEUTRAL,
+    NEUTRAL_ATTR_ONLY,
     NEUTRAL_METHODS,
     OPAQUE_CALLABLES,
     OPAQUE_OUT,
@@ -187,7 +188,10 @@ class _Rewriter(ast.NodeTransformer):
         elif name in ALLOC:
             self.sites.append(f"{name} -> traced allocation")
             node.func = ast.Name(id=f"__skv_{name}__", ctx=ast.Load())
-        elif name in NEUTRAL:
+        elif name in NEUTRAL or (
+            name in NEUTRAL_ATTR_ONLY
+            and isinstance(node.func, ast.Attribute)
+        ):
             self.sites.append(f"{name} -> pair-preserving")
             node.func = ast.Name(id="__skv_neutral__", ctx=ast.Load())
         elif name in CONCRETE:

@@ -38,9 +38,20 @@ def _loop_iter(loop_id):
     else:
         _LOOP_STACK.append([loop_id, 0])
     _LOOP_EVENTS.append((_session.seq, tuple((l, i) for l, i in _LOOP_STACK)))
+    import sys as _sys
+
     from .recurrence import on_loop_iter
 
-    on_loop_iter(loop_id, _LOOP_STACK[-1][1])
+    # the marker runs INSIDE the loop's frame: its locals map traced
+    # values to the program's own variable names, so folded state can
+    # print as alpha_ and coef_ instead of _state83
+    frame = _sys._getframe(1)
+    names = {
+        id(v): k
+        for k, v in frame.f_locals.items()
+        if type(v).__name__ == "Pair"
+    }
+    on_loop_iter(loop_id, _LOOP_STACK[-1][1], names)
 
 
 def _loop_end(loop_id):

@@ -41,6 +41,38 @@ def opaque_call(func, args, kwargs):
     return _opaque_call_impl(Pair, func, args, kwargs)
 
 
+# multi-output routines whose outputs have API-level names: an atom
+# called svd_S is guessable by anyone who knows what an SVD is,
+# svd_1_1 is not. Positions beyond the table fall back to indices.
+_OUTPUT_ROLES = {
+    "svd": ("U", "S", "Vh"),
+    "eigh": ("w", "v"),
+    "eig": ("w", "v"),
+    "qr": ("Q", "R"),
+    "slogdet": ("sign", "logabsdet"),
+    "lstsq": ("x", "residuals", "rank", "s"),
+}
+
+
+def _atom_prefix(fname):
+    """Group prefix for one multi-output call: role-named routines get
+    svd / svd2 / ..; everything else keeps the record-index scheme the
+    ancestry scoping matches on."""
+    if fname in _OUTPUT_ROLES:
+        prior = sum(
+            1 for r in _OPAQUE if str(r[-1][0]).startswith(fname)
+        )
+        return fname if prior == 0 else f"{fname}{prior + 1}"
+    return f"{fname}_{len(_OPAQUE)}"
+
+
+def _out_name(prefix, fname, pos):
+    roles = _OUTPUT_ROLES.get(fname)
+    if roles and pos < len(roles):
+        return f"{prefix}_{roles[pos]}"
+    return f"{prefix}_{pos}"
+
+
 def _opaque_call_impl(Pair, func, args, kwargs):
     """A compiled routine the trace cannot enter: run it on the values,
     name it in the formula, snapshot inputs against hidden mutation,
@@ -96,9 +128,10 @@ def _opaque_call_impl(Pair, func, args, kwargs):
         # float-array output becomes its own atom; integer bookkeeping
         # (pivots, status) passes through concrete
         outs = []
+        prefix = _atom_prefix(fname)
         for pos, res in enumerate(result):
             if isinstance(res, np.ndarray) and res.dtype.kind in "fc":
-                name = f"{fname}_{len(_OPAQUE)}_{pos}"
+                name = _out_name(prefix, fname, pos)
                 if res.ndim == 0:
                     # a 0-d output (a residue, a rank): a scalar atom
                     outs.append(
@@ -124,7 +157,7 @@ def _opaque_call_impl(Pair, func, args, kwargs):
                 outs.append(res)
         _OPAQUE.append(
             check_call(fname, pristine, result)
-            + ((f"{fname}_{len(_OPAQUE)}_*", str(call)),)
+            + ((f"{prefix}_*", str(call)),)
         )
         return tuple(outs)
     shape = np.shape(result) if hasattr(result, "shape") else ()
