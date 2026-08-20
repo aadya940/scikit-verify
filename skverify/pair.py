@@ -1128,8 +1128,14 @@ class Pair:
         tex_rows = [(str(sym), e) for sym, e in subs] + list(
             zip(labels, reduced)
         )
+        def tex_label(lbl):
+            # KaTeX rejects raw specials inside \text{}
+            for ch in "\\%$#&_{}":
+                lbl = lbl.replace(ch, "\\" + ch)
+            return lbl
+
         tex = "".join(
-            r"\text{%s} &= %s \\" % (lbl, sympy.latex(e))
+            r"\text{%s} &= %s \\" % (tex_label(lbl), sympy.latex(e))
             for lbl, e in tex_rows
         )
         out = CertificateText("\n".join(parts))
