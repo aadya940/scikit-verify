@@ -1017,7 +1017,23 @@ class Pair:
         parts = []
         exprs = []
         labels = []
-        for sym, d in self.definitions.items():
+        # definition-before-use order: a definition referencing other
+        # defined symbols prints after them
+        defs = dict(self.definitions)
+        ordered = []
+        placed = set()
+        while defs:
+            progressed = False
+            for sym in list(defs):
+                deps = defs[sym].free_symbols & set(defs) - {sym}
+                if deps <= placed:
+                    ordered.append((sym, defs.pop(sym)))
+                    placed.add(sym)
+                    progressed = True
+            if not progressed:  # cycle safety: dump remainder as-is
+                ordered.extend(defs.items())
+                break
+        for sym, d in ordered:
             labels.append(str(sym))
             exprs.append(d)
         f = self.formula

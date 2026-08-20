@@ -205,10 +205,12 @@ def _plantable(pair):
     return None
 
 
-def _probe_for(kind, pos):
+def _probe_for(kind, pos, round_tag="a"):
     from .helpers import axis_idx
 
-    label = sympy.Dummy(f"state{pos}")
+    # round tag in the NAME: round-one and round-two probes at the
+    # same position must print distinguishably in certificates
+    label = sympy.Dummy(f"state{pos}{round_tag}")
     if kind == "scalar":
         return label, label
     return label, sympy.IndexedBase(label)[axis_idx(0)]
@@ -382,7 +384,7 @@ def _extract_first(rec, body, sig):
     # plant round two on the SAME positions of this body
     b_dummies = []
     for j, pos in enumerate(positions):
-        label, probe = _probe_for(kinds[j], pos)
+        label, probe = _probe_for(kinds[j], pos, "b")
         # eager meaning of this body's slot IS its template; the
         # round-one dummies inside resolve recursively at repair time
         # (materializing them here would rebuild the giant pre-plant
