@@ -79,11 +79,26 @@ class Pair:
             # markers, no folder) snowballs without bound. Blowup is a
             # wall like any other: raising sends the trace down the
             # instrumented retry, where loop markers fire and the
-            # recurrence folder keeps formulas finite.
-            raise NotImplementedError(
-                "formula grows without bound (unrolled iteration); "
-                "retrying instrumented so the loop folds"
-            )
+            # recurrence folder keeps formulas finite. The provenance
+            # sum OVERESTIMATES under sharing, so the real size gets
+            # one exact check before the wall fires.
+            real = sympy.count_ops(formula)
+            if real < 10_000 or (
+                getattr(_session, "instrumented", False) and real < 200_000
+            ):
+                # false alarm, or already instrumented (nowhere to
+                # route): recalibrate and let the honest size ride
+                self._fsize = int(real) + 1
+            elif getattr(_session, "instrumented", False):
+                raise NotImplementedError(
+                    "formula grows without bound and the loop cannot "
+                    "fold; the unrolled result would be unusable"
+                )
+            else:
+                raise NotImplementedError(
+                    "formula grows without bound (unrolled iteration); "
+                    "retrying instrumented so the loop folds"
+                )
 
         if domain is not None and len(domain) == 0:
             domain = None  # 0-d allocation: a scalar

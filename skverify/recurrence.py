@@ -49,7 +49,7 @@ GROWTH_LIMIT = 50_000
 # body size at which the fold engages early: for fast-growing bodies
 # every eager iteration multiplies the init formulas the fold must
 # embed, so waiting is strictly worse
-PLANT_TRIGGER = 2_000
+PLANT_TRIGGER = 500
 
 # most state slots the folder will track (a body carrying more than
 # this many independent values is not a foldable recurrence in v1)
@@ -154,6 +154,43 @@ def _signature(body, guards_from, opaque_from):
     return (ops, guards, atoms)
 
 
+def inline(expr, mapping):
+    """Substitute recurrence symbols into an expression at harvest:
+    plain symbols by xreplace, IndexedBase labels elementwise (a bare
+    xreplace of an array-slot label would malform the IndexedBase)."""
+    if not isinstance(expr, sympy.Basic):
+        return expr
+    keys = set(mapping)
+    # substitution must not pay evaluation: rebuilding the combined
+    # tree runs factor_terms/flatten over every node, and the fully
+    # inlined certificate can be large. The held form is the same
+    # mathematics; the user evaluates when and if they choose.
+    with sympy.evaluate(False):
+        return _inline_passes(expr, mapping, keys)
+
+
+def _inline_passes(expr, mapping, keys):
+    for _ in range(3):  # meanings may reference other recurrence symbols
+        present = expr.free_symbols & keys
+        if not present:
+            break
+        idx_labels = {
+            e.base.label
+            for e in expr.atoms(sympy.Indexed)
+            if getattr(e.base, "label", None) in present
+        }
+        scalars = present - idx_labels
+        if scalars:
+            expr = expr.xreplace({d: mapping[d] for d in scalars})
+        if idx_labels:
+            expr = expr.replace(
+                lambda e: isinstance(e, sympy.Indexed)
+                and getattr(e.base, "label", None) in idx_labels,
+                lambda e: mapping[e.base.label].xreplace({_axis0(): e.indices[0]}),
+            )
+    return expr
+
+
 def _plantable(pair):
     """Which probe stands in for this pair: a plain Dummy for scalars,
     an IndexedBase over a Dummy label for 1-D arrays (the template
@@ -193,7 +230,7 @@ def _subst_slot(expr, label, value):
 
     if expr.has(sympy.Indexed):
         expr = expr.replace(
-            is_slot, lambda e: value.subs(i0, e.indices[0])
+            is_slot, lambda e: value.xreplace({i0: e.indices[0]})
         )
     return expr.xreplace({label: value})
 
@@ -251,13 +288,41 @@ def on_loop_end(loop_id):
         sig = _signature(body, rec["guard_mark"], rec["opaque_mark"])
         rec["adv_guard_mark"] = rec["guard_mark"]
         _advance(rec, body, sig)
+        # a convergence break leaves a PARTIAL final body: its slot
+        # values fail the signature (correctly) and stay eager at
+        # template size. Everything downstream of the loop composes
+        # with them, so they leave as light symbols too -- the real
+        # expressions inline at harvest with everything else.
+        tag = len(_session.recurrences)
+        for j, pos in enumerate(rec.get("positions", ())):
+            if pos >= len(body):
+                continue
+            f = body[pos].formula
+            if (
+                isinstance(f, sympy.Basic)
+                and f.free_symbols
+                and not f.is_Symbol
+                and sympy.count_ops(f) > 64
+            ):
+                sym = sympy.Symbol(f"loop{tag}_exit{j}", real=True)
+                _session.recurrences[sym] = f
+                body[pos].formula = sym
+                body[pos]._fsize = 8
     elif rec["phase"] in ("probe1", "probe2"):
         _repair(rec)  # loop ended mid-probe: restore eager formulas
 
 
 def _broken(rec):
+    """A fold attempt failed. The path pattern often shifts ONCE (a
+    convergence branch flips as iterates settle) and is stable again
+    after, so the folder goes back to watching and may re-plant: the
+    loop folds as segments, a later segment's init referencing the
+    earlier segment's light symbols. A cap prevents thrashing."""
     _repair(rec)
-    rec["phase"] = "broken"
+    rec["segments"] = rec.get("segments", 0) + 1
+    rec["phase"] = "watch" if rec["segments"] <= 8 else "broken"
+    for key in ("plants", "b_plants", "positions", "head_syms"):
+        rec.pop(key, None)
 
 
 def _plant(rec, body, sig):
@@ -416,10 +481,13 @@ def _extract_second(rec, body, sig):
         (r, rec["repairs"][label])
         for (r, _), label in zip(rec.get("b_plants", ()), rec["b_dummies"])
     ]
-    # earlier pairs may still hold probe symbols: restore their eager
-    # meaning so nothing outside the fold ever sees a Dummy
+    # earlier pairs may still hold probe symbols. Eagerly rewriting
+    # all of them costs ~20s of xreplace for pairs that are mostly
+    # provenance-only; instead their meanings enter the recurrence
+    # map and inline at harvest IF anything still references them.
     keep = {id(body[pos]) for pos in rec["positions"]}
-    _repair(rec, keep_ids=keep)
+    _repair(rec, keep_ids=keep, lazy=True)
+    _session.recurrences.update(rec["repairs"])
 
 
 def _advance(rec, body, sig):
@@ -436,7 +504,29 @@ def _advance(rec, body, sig):
     if sig != rec["sig_probe"] or any(
         pos >= len(body) for pos in rec["positions"]
     ):
-        rec["phase"] = "broken"  # eager formulas remain exact; fold ends
+        # the path changed (a convergence branch flipped): this body
+        # stays eager and exact, and the folder goes back to watching
+        # -- the loop folds as segments. Its slot values leave as
+        # light symbols so downstream composition stays cheap.
+        tag = len(_session.recurrences)
+        for j, pos in enumerate(rec.get("positions", ())):
+            if pos >= len(body):
+                continue
+            f = body[pos].formula
+            if (
+                isinstance(f, sympy.Basic)
+                and f.free_symbols
+                and not f.is_Symbol
+                and sympy.count_ops(f) > 64
+            ):
+                sym = sympy.Symbol(f"loop{tag}_seg{j}", real=True)
+                _session.recurrences[sym] = f
+                body[pos].formula = sym
+                body[pos]._fsize = 8
+        rec["segments"] = rec.get("segments", 0) + 1
+        rec["phase"] = "watch" if rec["segments"] <= 8 else "broken"
+        for key in ("plants", "b_plants", "positions", "head_syms"):
+            rec.pop(key, None)
         return
     m = rec["count"]
     # guards recorded during this body reference the head symbols,
@@ -460,7 +550,7 @@ def _advance(rec, body, sig):
     rec["count"] = m + 1
 
 
-def _repair(rec, keep_ids=()):
+def _repair(rec, keep_ids=(), lazy=False):
     """Substitute probe symbols back to their eager meanings in every
     pair created since the first plant: no Dummy may outlive the fold
     attempt. Pairs in ``keep_ids`` (the new Iterate heads) are exempt.
@@ -513,7 +603,7 @@ def _repair(rec, keep_ids=()):
                 )
         return f
 
-    for ref in rec.get("planted", ()):
+    for ref in () if lazy else rec.get("planted", ()):
         p = ref()
         if p is None or id(p) in keep_ids or id(p) in done:
             # direct-assigned pairs hold pre-plant formulas: re-walking

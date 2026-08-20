@@ -29,6 +29,7 @@ def to_sympy(fn, *args, **kwargs):
         sys.setrecursionlimit(20000)
 
     _session.reset()
+    _session.instrumented = False
     # reset FIRST: _wrap records disclosures (integer-as-config) into
     # the session, and they must survive to the harvest
     if kwargs:
@@ -48,6 +49,7 @@ def to_sympy(fn, *args, **kwargs):
         # a wall the plain trace cannot pass; retry a semantically
         # identical instrumented copy (math-neutral calls replaced)
         fn_run, sites = instrument(fn)
+        _session.instrumented = True
         if not sites:
             import inspect as _inspect
 
@@ -90,13 +92,15 @@ def to_sympy(fn, *args, **kwargs):
         _session.pending_mask_guards.clear()
         if _session.recurrences:
             # folded loops traced through featherweight head symbols;
-            # the certificate gets the real held Iterate inlined
+            # the certificate gets the real held objects inlined
+            from .recurrence import inline
+
             rec_map = dict(_session.recurrences)
             if hasattr(out, "formula") and isinstance(out.formula, sympy.Basic):
-                out.formula = out.formula.xreplace(rec_map)
+                out.formula = inline(out.formula, rec_map)
             for i, g in enumerate(_GUARDS):
-                if isinstance(g, sympy.Basic) and g.free_symbols & set(rec_map):
-                    _GUARDS[i] = g.xreplace(rec_map)
+                if isinstance(g, sympy.Basic):
+                    _GUARDS[i] = inline(g, rec_map)
         out.preconditions = sympy.And(*_GUARDS) if _GUARDS else sympy.true
         records = list(_OPAQUE)
         if _session.hashed:
