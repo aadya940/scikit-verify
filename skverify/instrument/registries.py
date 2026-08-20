@@ -26,7 +26,7 @@ NEUTRAL = {
 # cascade of numpy-internals walls on the deeper-traced values
 # (average with out=, umath reductions on bags) -- its own chase.
 # Empty until that chase happens.
-NEUTRAL_ATTR_ONLY = set()
+NEUTRAL_ATTR_ONLY = {"array"}
 OPAQUE_CALLABLES = {
     "solve_banded",
     "solveh_banded",

@@ -930,8 +930,10 @@ class Pair:
         # Branch capture: a scalar condition (if x > 0:) is decided by the
         # concrete lane and RECORDED -- the branch taken becomes a hypothesis
         # on the certificate. to_sympy harvests _GUARDS into .preconditions.
-        if Pair._is_condition(self.formula) and np.ndim(self.value) == 0:
-            outcome = bool(self.value)
+        if Pair._is_condition(self.formula) and np.size(self.value) == 1:
+            # scalar or size-1 array: unambiguous, same as numpy's own
+            # bool() rules
+            outcome = bool(np.asarray(self.value).ravel()[0])
             _GUARDS.append(self.formula if outcome else sympy.Not(self.formula))
             return outcome
         # arrays: ambiguous, like numpy's own error -- use .all()/.any().
@@ -1533,6 +1535,27 @@ class Pair:
 
     def __array_ufunc__(self, ufunc, method, *inputs, out=None, **kwargs):
         if out is not None:
+            # in-place into an OBJECT array is honest mutation: each
+            # slot re-binds to a fresh traced scalar (the bag -=
+            # pattern from in-place updates on decompressed values).
+            # Numeric destinations would silently drop formulas.
+            if (
+                method == "__call__"
+                and len(out) == 1
+                and isinstance(out[0], np.ndarray)
+                and out[0].dtype == object
+            ):
+                r = self.__array_ufunc__(ufunc, method, *inputs, **kwargs)
+                if r is NotImplemented:
+                    return r
+                dst = out[0]
+                if isinstance(r, Pair):
+                    for idx in range(dst.size):
+                        dst.ravel()[idx] = r[idx] if r.shape else r
+                else:
+                    for idx, e in enumerate(np.ravel(r)):
+                        dst.ravel()[idx] = e
+                return dst
             raise NotImplementedError("out= is not supported (mutation)")
         if method == "reduce" and ufunc in (np.maximum, np.minimum, np.add):
             a = inputs[0]
