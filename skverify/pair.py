@@ -1134,12 +1134,29 @@ class Pair:
                 lbl = lbl.replace(ch, "\\" + ch)
             return lbl
 
-        tex = "".join(
+        tex_lines = [
             r"\text{%s} &= %s \\" % (tex_label(lbl), sympy.latex(e))
             for lbl, e in tex_rows
-        )
+        ]
+        # several small display blocks, not one giant aligned: math
+        # renderers (GitHub's notebook view especially) fail silently
+        # on oversized single blocks and dump the source as text
+        blocks = []
+        chunk = []
+        size = 0
+        for line in tex_lines:
+            chunk.append(line)
+            size += len(line)
+            if size > 1500:
+                blocks.append(chunk)
+                chunk, size = [], 0
+        if chunk:
+            blocks.append(chunk)
         out = CertificateText("\n".join(parts))
-        out._latex = r"\begin{aligned}" + tex + r"\end{aligned}"
+        out._latex = "\n".join(
+            r"$$\begin{aligned}" + "".join(b) + r"\end{aligned}$$"
+            for b in blocks
+        )
         return out
 
     @property
