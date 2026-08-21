@@ -6,101 +6,54 @@
 
 ![CI](https://github.com/aadya940/scikit-verify/actions/workflows/ci.yml/badge.svg)
 
-**scikit-verify** runs your NumPy function once and returns the symbolic
-formula it computed, as an ordinary SymPy expression. Your code is not
-modified, annotated, or rewritten. It just runs, and the mathematics
-falls out.
+* [Source code](https://github.com/aadya940/scikit-verify)
+* [License](https://github.com/aadya940/scikit-verify/blob/master/LICENSE)
+
+scikit-verify is a tracer for numerical Python. It runs your NumPy
+function once and returns the formula it computed, as an ordinary SymPy
+expression you can read, simplify, compare against a paper, or evaluate
+at any other input. Your code is not modified or annotated. For example:
 
 ```python
 import numpy as np
 from skverify import to_sympy
 
-def step(u, dt, h):
-    lap = (u[2:] - 2 * u[1:-1] + u[:-2]) / h**2
-    unew = u.copy()
-    unew[1:-1] = u[1:-1] + dt * lap
-    return unew
+def weighted_rms(x, w):
+    return np.sqrt(np.sum(w * x**2) / np.sum(w))
 
-out = to_sympy(step, np.sin(np.linspace(0, np.pi, 9)), 0.01, 0.1)
+out = to_sympy(weighted_rms, np.array([1.0, 2.0, 3.0]), np.array([0.5, 0.3, 0.2]))
 
 out.formula
-# Piecewise((dt*(u[i+1] + u[i-1] - 2*u[i])/h**2 + u[i], (i >= 1) & (i < 8)),
-#           (u[i], True))
+# sqrt(Sum(w[j]*x[j]**2, (j, 0, 2))/Sum(w[j], (j, 0, 2)))
 ```
 
-The stencil, the boundary handling, and the parameters, all visible.
-`dt` and `h` stayed symbolic because you passed floats. The concrete
-result is still there in `out.value`.
-
-## Why
-
-- **Check code against the paper.** Recover the equation your code
-  implements and prove it equal to the one you published, symbolically:
-
-  ```python
-  from skverify.checks import against
-  against(out, textbook_rule)
-  # Evidence(verdict='proven', method='canonical', detail=0)
-  ```
-
-- **Find bugs by subtracting formulas.** Two implementations that
-  disagree numerically tell you *that* something is wrong. Subtracting
-  their formulas tells you *where*:
-
-  ```python
-  (mine.formula - reference.formula).doit()
-  # -y[1]/24 - y[3]/24 - y[5]/24 - y[7]/24
-  #  ^ only odd indices survive: the bug is in the odd branch,
-  #    and the weight is off by exactly one
-  ```
-
-- **Review generated code.** LLM-written numerical kernels look right
-  more often than they are right. Lift them and read the mathematics.
-
-- **Use SymPy on running code.** Differentiate a traced loss to get the
-  gradient you never wrote. Render formulas as LaTeX for your paper.
-  Simplify, substitute, `lambdify`.
-
-## It works on real libraries
+Every formula comes as a certificate: the expression, plus the
+assumptions it was derived under. When code branches on your data, the
+branch taken becomes a stated hypothesis instead of a hidden one:
 
 ```python
-from scipy.interpolate import make_smoothing_spline
+out = to_sympy(np.median, np.array([3.0, 1.0, 4.0, 1.5]))
+print(out.pretty())
 
-def smooth(x, y):
-    return make_smoothing_spline(x, y, lam=0.1)
-
-sm = to_sympy(smooth, x, y)
-
-sm.preconditions
-# (x[1] - x[0] > 0) & (x[2] - x[1] > 0) & ...
-#  ^ scipy's own input validation, recorded as formulas
-
-sm.unchecked
-# [('design_matrix', {'residual': 'ok'}), ('solve_banded', {'residual': 'ok'})]
-#  ^ the compiled routines inside, each checked on this very call:
-#    the basis builder against sympy's own B-splines, the solver
-#    against A @ x == b
+# formula    = a[0]/2 + a[3]/2
+# assumes[0] = a[0] <= a[2]
+# assumes[1] = a[1] <= a[3]
+# assumes[2] = a[3] <= a[0]
 ```
 
-Traced code from **SciPy** (splines, quadrature, statistics, signal),
-**statsmodels** (regression, autocovariance, diagnostics) and
-**scikit-learn** (metrics, kernels, SVM decision functions) lifts
-today. The walkthrough notebook shows all of it end to end:
-[`examples/demo.ipynb`](examples/demo.ipynb).
+The contract is exact-or-refuse. If an operation has no faithful
+symbolic form, scikit-verify raises instead of guessing:
 
-## The contract
+```python
+to_sympy(lambda a: np.round(a).mean(), np.array([1.4, 2.6]))
+# NotImplementedError: rounding a traced value changes the math
+```
 
-Three promises, kept everywhere:
-
-1. **Exact or absent.** Every formula is verified against the numerical
-   execution. If a pattern cannot be proven, it is not emitted.
-2. **Loud refusal over plausible guessing.** Anything that cannot be
-   traced exactly raises `NotImplementedError` naming the blocker.
-   There is no silent fallback.
-3. **The certificate states its own scope.** Data-dependent branches
-   become `.preconditions`. Compiled results become named terms listed
-   in `.unchecked`, checked where a check exists and honestly marked
-   `unknown` where none does yet.
+This works on real library code, not just kernels: scikit-learn metrics
+come back as their defining formulas (precision as its ratio of counting
+sums), fitted estimators as their closed forms, iterative solvers as
+held recurrences, and compiled routines (LAPACK, Cython) as named terms
+that are checked against their defining equations on every call.
 
 ## Installation
 
