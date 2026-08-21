@@ -267,8 +267,28 @@ def _sum(a, axis=None, **kwargs):
 
 
 def _sum_plain(a, axis=None, **kwargs):
+    if isinstance(axis, tuple) and len(axis) == 1:
+        axis = axis[0]  # scipy normalizes axis to tuples internally
+    keepdims = kwargs.pop("keepdims", False)
+    dt = kwargs.pop("dtype", None)
+    if dt is not None and np.dtype(dt).kind not in "fc" and np.dtype(dt) != object:
+        raise NotImplementedError("np.sum with a non-float dtype changes the math")
     if kwargs:
         raise NotImplementedError(f"np.sum kwargs {list(kwargs)} not supported")
+    if keepdims:
+        r = _sum_plain(a, axis=axis)  # refuses first on unsupported axes
+        if isinstance(axis, tuple):
+            raise NotImplementedError("np.sum keepdims with axis tuples")
+        if isinstance(r, Pair):
+            nd = np.ndim(Pair._value_of(a))
+            shape = [1] * nd if axis is None else [
+                1 if ax == (axis % nd) else n
+                for ax, n in enumerate(np.shape(Pair._value_of(a)))
+            ]
+            v = np.reshape(np.asarray(r.value), shape)
+            return Pair(v, r.formula, tuple((0, int(n)) for n in shape), steps=(r,))
+        return np.reshape(r, [1] * np.ndim(Pair._value_of(a))) if axis is None else r
+
     if isinstance(a, Pair) and a.domain is None:
         return a  # the sum of a scalar is itself
     if not isinstance(a, Pair):

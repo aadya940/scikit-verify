@@ -99,9 +99,11 @@ class TestRefusals:
         with pytest.raises(NotImplementedError):
             np.sum(p, axis=(0, 1))
 
-    def test_keepdims_refused(self, p):
-        with pytest.raises(NotImplementedError):
-            np.sum(p, axis=0, keepdims=True)
+    def test_keepdims_keeps_the_axis(self, p):
+        r = np.sum(p, axis=0, keepdims=True)
+        assert np.shape(r.value) == (1,) + np.shape(p.value)[1:]
+        full = np.sum(p, axis=0)
+        assert r.formula == full.formula
 
 
 class TestUnchangedPaths:
