@@ -1204,6 +1204,22 @@ def _trace(a, offset=0, **kwargs):
 
 FUNCTION_TABLE[np.trace] = _trace
 FUNCTION_TABLE[np.nan_to_num] = _nan_to_num
+def _fill_diagonal(a, val, wrap=False):
+    if not isinstance(a, Pair):
+        raise NotImplementedError(
+            "fill_diagonal into a non-traced destination holding traced "
+            "values; assign per element instead"
+        )
+    if wrap or len(a._axis_bounds or ()) != 2:
+        raise NotImplementedError("fill_diagonal: 2-D unwrapped only")
+    n = min(hi - lo for lo, hi in a._axis_bounds)
+    vals = np.broadcast_to(np.asarray(Pair._value_of(val)), (n,))
+    for k in range(n):
+        a[k, k] = vals[k] if not isinstance(val, Pair) else val[k] if val._axis_bounds else val
+    return None
+
+
+FUNCTION_TABLE[np.fill_diagonal] = _fill_diagonal
 FUNCTION_TABLE[np.copyto] = _mutating_write(np.copyto)
 FUNCTION_TABLE[np.place] = _mutating_write(np.place)
 FUNCTION_TABLE[np.putmask] = _mutating_write(np.putmask)
