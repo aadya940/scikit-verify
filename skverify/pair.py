@@ -1531,6 +1531,20 @@ class Pair:
                 idx = np.asarray(parts[ax])
                 if idx.ndim == 1 and 1 <= idx.size <= 4096:
                     return self._axis_gather(ax, idx, key)
+            if all(
+                is_index_array(k) or isinstance(k, (int, np.integer))
+                for k in parts
+            ):
+                # X[order, 1]: ints broadcast against the index array
+                # (numpy's own rule); positions stay concrete facts
+                arrs = np.broadcast_arrays(
+                    *[np.asarray(k) for k in parts]
+                )
+                out = np.empty(arrs[0].shape, dtype=object)
+                for pos in np.ndindex(arrs[0].shape):
+                    at = tuple(int(a[pos]) for a in arrs)
+                    out[pos] = self[at]
+                return out
             raise NotImplementedError("mixed fancy/slice indexing not supported")
         if len(parts) == 1:
             idx = np.asarray(parts[0])
