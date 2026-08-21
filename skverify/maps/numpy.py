@@ -763,6 +763,21 @@ def _average_impl(a, axis=None, weights=None, **kwargs):
             for e, wv in zip(elems[1:], wvals[1:]):
                 num = num + e * float(wv)
             return num / float(wvals.sum())
+        if arr.dtype == object and any(
+            isinstance(e, Pair) for e in arr.ravel()
+        ):
+            # per-axis bag average: element dunders keep the trace;
+            # falling to np.average would dispatch straight back here
+            if weights is None:
+                n = arr.shape[axis % arr.ndim]
+                return _sum_plain(arr, axis=axis) / float(n)
+            w = np.asarray(Pair._value_of(weights), dtype=float)
+            ax = axis % arr.ndim
+            if w.ndim == 1 and w.size == arr.shape[ax]:
+                shape = [1] * arr.ndim
+                shape[ax] = -1
+                w = w.reshape(shape)  # np.average's weight alignment
+            return _sum_plain(arr * w, axis=axis) / float(w.sum())
         return np.average(
             Pair._numeric(arr, copy=False), axis=axis, weights=weights
         )

@@ -321,7 +321,40 @@ def _skv_clip(x, min=None, max=None, a_min=None, a_max=None, **kwargs):
     return np.clip(x, lo, hi)
 
 
+def _concrete_index(k):
+    """Index positions are trace facts (data-as-address, like argsort):
+    a traced integer index selects concretely."""
+    if isinstance(k, Pair):
+        v = np.asarray(Pair._value_of(k.value))
+        return v.astype(np.intp) if v.dtype.kind in "fiu" else k
+    if isinstance(k, np.ndarray) and k.dtype == object and any(
+        isinstance(e, Pair) for e in k.ravel()
+    ):
+        vals = np.asarray(
+            [Pair._value_of(e) for e in k.ravel()]
+        ).reshape(k.shape)
+        if vals.dtype.kind in "fiu" and np.all(vals == np.floor(vals)):
+            return vals.astype(np.intp)
+    return k
+
+
 def _skv_getitem(obj, key):
+    if isinstance(key, tuple):
+        # multi-axis fancy indexing: traced integer indices in any
+        # position select concretely (their positions are facts about
+        # this trace). ONLY for real arrays: np.r_ and friends use
+        # subscript syntax for construction, where members are DATA
+        if isinstance(obj, np.ndarray) and obj.dtype != object and any(
+            isinstance(k, Pair)
+            or (isinstance(k, np.ndarray) and k.dtype == object)
+            for k in key
+        ):
+            key = tuple(_concrete_index(k) for k in key)
+        return obj[key]
+    return _skv_getitem_single(obj, key)
+
+
+def _skv_getitem_single(obj, key):
     """Subscript with selection semantics for traced keys.
 
     A mapping looked up by a traced scalar is a SELECTION: the result

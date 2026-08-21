@@ -27,8 +27,12 @@ class _Rewriter(ast.NodeTransformer):
         # only simple-expression indices in Load position: slices keep
         # native syntax, stores keep assignment semantics
         if isinstance(node.ctx, ast.Load) and not isinstance(
-            node.slice, (ast.Slice, ast.Tuple)
+            node.slice, ast.Slice
         ):
+            if isinstance(node.slice, ast.Tuple) and any(
+                isinstance(e, ast.Slice) for e in node.slice.elts
+            ):
+                return node  # mixed slice tuples keep native syntax
             return ast.Call(
                 func=ast.Name(id="__skv_getitem__", ctx=ast.Load()),
                 args=[node.value, node.slice],
