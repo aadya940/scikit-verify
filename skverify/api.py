@@ -228,10 +228,22 @@ def _repack(out):
     if not (isinstance(out, np.ndarray) and out.dtype == object):
         return out
     elements = out.ravel()
-    if not all(isinstance(p, Pair) for p in elements):
+    if not all(
+        isinstance(p, Pair) or isinstance(p, (int, float, np.number))
+        for p in elements
+    ):
         return out  # not ours: leave untouched
-    values = np.array([p.value for p in elements]).reshape(out.shape)
-    formulas = [p.formula for p in elements]
+    if not any(isinstance(p, Pair) for p in elements):
+        return out
+    # plain numbers riding along (a column of ones from add_constant)
+    # are constants of the formula, not foreign objects
+    values = np.array(
+        [p.value if isinstance(p, Pair) else p for p in elements]
+    ).reshape(out.shape)
+    formulas = [
+        p.formula if isinstance(p, Pair) else sympy.sympify(p)
+        for p in elements
+    ]
     if out.ndim == 1:
         general = _recompress(formulas)
         if general is not None:
