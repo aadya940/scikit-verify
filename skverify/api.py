@@ -62,9 +62,38 @@ def to_sympy(fn, *args, **kwargs):
                     "without source caching), so the instrumented retry cannot "
                     "run. Define the function in a .py file or notebook cell."
                 ) from sys.exc_info()[1]
-            raise
+            plain_err = sys.exc_info()[1]
+            try:
+                fn(*args, **kwargs)
+            except Exception:
+                raise  # the user's own error: propagate untouched
+            raise NotImplementedError(
+                f"[skverify] could not lift this call "
+                f"({type(plain_err).__name__}: {plain_err}). Your code "
+                "runs fine; the tracer hit an idiom it does not handle "
+                "yet -- see doc/sharp-bits.md, and please report this."
+            ) from plain_err
         _session.reset()
-        out = _repack(fn_run(*wrapped, **kw_wrapped))
+        try:
+            out = _repack(fn_run(*wrapped, **kw_wrapped))
+        except NotImplementedError:
+            raise  # already a one-sentence refusal
+        except Exception as lift_err:
+            # the polite-failure contract: if the REAL function runs
+            # fine on these inputs, the death is OURS -- refuse with
+            # one sentence instead of a foreign traceback. If the real
+            # function also fails, that is the user's own error and
+            # it propagates untouched.
+            try:
+                fn(*args, **kwargs)
+            except Exception:
+                raise lift_err from None
+            raise NotImplementedError(
+                f"[skverify] could not lift this call "
+                f"({type(lift_err).__name__}: {lift_err}). Your code runs "
+                "fine; the tracer hit an idiom it does not handle yet -- "
+                "see doc/sharp-bits.md, and please report this."
+            ) from lift_err
         if any("decorator unwrapped" in site for site in sites):
             # names propose, runs dispose: the wrapper must have been
             # neutral FOR THIS CALL -- rerun the real function on the

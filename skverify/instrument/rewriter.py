@@ -188,6 +188,7 @@ class _Rewriter(ast.NodeTransformer):
             # float() forces __float__, which must return a real float:
             # the one cast a Pair cannot survive. In the twin,
             # float(pair) keeps the pair (its value lane IS the float)
+            self.sites.append("float -> pair-preserving")
             node.func = ast.Name(id="__skv_float__", ctx=ast.Load())
         elif name in ALLOC:
             self.sites.append(f"{name} -> traced allocation")
