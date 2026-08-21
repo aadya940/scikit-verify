@@ -342,9 +342,10 @@ def _skv_getitem(obj, key):
     if isinstance(key, tuple):
         # multi-axis fancy indexing: traced integer indices in any
         # position select concretely (their positions are facts about
-        # this trace). ONLY for real arrays: np.r_ and friends use
-        # subscript syntax for construction, where members are DATA
-        if isinstance(obj, np.ndarray) and obj.dtype != object and any(
+        # this trace). ONLY for real ndarrays: np.r_ and friends are
+        # index-syntax CONSTRUCTORS (not ndarrays), where members are
+        # data, never addresses
+        if isinstance(obj, np.ndarray) and any(
             isinstance(k, Pair)
             or (isinstance(k, np.ndarray) and k.dtype == object)
             for k in key
