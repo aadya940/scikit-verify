@@ -1157,9 +1157,9 @@ class Pair:
         # accepts $\displaystyle ...$ (what every sympy cell emits)
         # where it rejects $$ blocks
         out._latex = "\n\n".join(
-            "$\displaystyle \begin{aligned}"
+            r"$\displaystyle \begin{aligned}"
             + "".join(b)
-            + "\end{aligned}$"
+            + r"\end{aligned}$"
             for b in blocks
         )
         return out
