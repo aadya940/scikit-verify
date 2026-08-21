@@ -75,10 +75,17 @@ class TestSliceWrite:
         assert u.formula.args[0][0] == V[I - 2]
         assert np.allclose(u.value[2:5], np.arange(3.0))
 
-    def test_strided_write_refused(self):
+    def test_strided_write_scatters_by_mod(self):
+        # A.flat[::k] = v (Ridge's add-to-diagonal): membership is
+        # Mod(i - start, step) == 0, exact
         u = Pair.array("u", np.zeros(6))
-        with pytest.raises(NotImplementedError):
-            u[::2] = 1.0
+        u[::2] = 1.0
+        assert np.array_equal(u.value, [1, 0, 1, 0, 1, 0])
+        U = sympy.IndexedBase("u")
+        i = sympy.Symbol("i", integer=True)
+        for k in range(6):
+            got = float(u.formula.subs(i, k).subs(U[k], 0.0))
+            assert got == float(u.value[k])
 
 
 class TestMaskedWrite:

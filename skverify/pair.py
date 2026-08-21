@@ -664,11 +664,7 @@ class Pair:
             for ax, entry in enumerate(entries):
                 if isinstance(entry, tuple):
                     start, stop, step = entry
-                    if step != 1:
-                        raise NotImplementedError(
-                            "strided assignment not supported yet"
-                        )
-                    axes_ranges.append(range(start, stop))
+                    axes_ranges.append(range(start, stop, step))
                 else:
                     axes_ranges.append(range(entry, entry + 1))
             positions = list(np.ndindex(*[len(r) for r in axes_ranges]))
@@ -689,7 +685,16 @@ class Pair:
             if isinstance(entry, tuple):
                 start, stop, step = entry
                 if step != 1:
-                    raise NotImplementedError("strided assignment not supported yet")
+                    # strided write (A.flat[::n+1] = diag): membership
+                    # is Mod(i - start, step) == 0 within the range
+                    condition.append(sympy.Ge(sym, start))
+                    condition.append(sympy.Lt(sym, stop))
+                    condition.append(
+                        sympy.Eq(sympy.Mod(sym - start, step), 0)
+                    )
+                    val_map[axis_idx(val_rank)] = (sym - start) / step
+                    val_rank += 1
+                    continue
                 if not (start == 0 and stop == lengths[ax]):
                     condition.append(sympy.Ge(sym, start))
                     condition.append(sympy.Lt(sym, stop))
@@ -801,8 +806,28 @@ class Pair:
                 index_map=index_map,
                 axis_bounds=tuple((0, n) for n in target),
             )
-        raise NotImplementedError(
-            "reshape that changes the layout is not supported yet"
+        # layout-changing reshape, C order: EXACT index arithmetic.
+        # The flat position of new index (i0..ip) decomposes into the
+        # old shape's indices by floor/Mod -- (n, m) raveled puts old
+        # (i, j) at k = m*i + j, so i = k//m and j = Mod(k, m).
+        old_shape = current
+        new_shape = target
+        flat = sympy.Integer(0)
+        stride = 1
+        for ax in reversed(range(len(new_shape))):
+            flat = flat + axis_idx(ax) * stride
+            stride *= int(new_shape[ax])
+        index_map = {}
+        stride = 1
+        for ax in reversed(range(len(old_shape))):
+            index_map[axis_idx(ax)] = sympy.Mod(
+                sympy.floor(flat / stride), int(old_shape[ax])
+            )
+            stride *= int(old_shape[ax])
+        return self._remap(
+            value=np.ascontiguousarray(self.value).reshape(shape).copy(),
+            index_map=index_map,
+            axis_bounds=tuple((0, int(n)) for n in new_shape),
         )
 
     def __add__(self, other):

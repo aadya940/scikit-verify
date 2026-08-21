@@ -86,7 +86,33 @@ def _skv_maybe(fn):
                     return np.array(vals).reshape(v.shape)
                 return v
 
-            return fn(*[deep(a) for a in args], **kwargs)
+            out_args = [deep(a) for a in args]
+            if fn.__name__.startswith(("coo_", "csr_", "csc_")) and out_args:
+                # sparse constructors: the index structure must be
+                # integer -- scipy silently builds a ZERO matrix from
+                # float indices (even integral ones). Data stays as-is.
+                def intify(x):
+                    if isinstance(x, tuple):
+                        return tuple(intify(e) for e in x)
+                    if (
+                        isinstance(x, np.ndarray)
+                        and x.dtype.kind == "f"
+                        and np.all(x == np.floor(x))
+                    ):
+                        return x.astype(np.int64)
+                    return x
+
+                dt = kwargs.get("dtype")
+                if dt is not None and np.dtype(dt) == object:
+                    # an object dtype (derived from traced weights)
+                    # makes scipy build an object matrix that folds to
+                    # zeros; the concretized data's own dtype is right
+                    kwargs = dict(kwargs)
+                    del kwargs["dtype"]
+                first = out_args[0]
+                if isinstance(first, tuple) and len(first) in (2, 3):
+                    out_args[0] = (first[0],) + intify(first[1:])
+            return fn(*out_args, **kwargs)
 
         return concrete_inventory
     self_arr = getattr(fn, "__self__", None)

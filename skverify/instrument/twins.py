@@ -191,6 +191,14 @@ def _instrument(fn, depth, seen, extra=None):
                 sites.extend(f"{name}: {t}" for t in sub_sites)
                 continue
             if inspect.isclass(callee):
+                from .registries import CONCRETE_BY_NAME
+
+                if callee.__name__ in CONCRETE_BY_NAME:
+                    # sparse constructors and inventory classes run on
+                    # CONCRETE values by doctrine; a pre-built twin
+                    # here would shadow the runtime treatment and
+                    # trace the construction anyway
+                    continue
                 try:
                     twin, twin_sites = _instrument_class(callee, depth, seen)
                 except (OSError, TypeError, SyntaxError, KeyError, AttributeError):

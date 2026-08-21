@@ -1187,6 +1187,22 @@ def _interp(x, xp, fp, left=None, right=None, period=None):
 
 FUNCTION_TABLE[np.select] = _select
 FUNCTION_TABLE[np.interp] = _interp
+def _trace(a, offset=0, **kwargs):
+    if not isinstance(a, Pair) or kwargs or len(a._axis_bounds or ()) != 2:
+        return np.trace(np.asarray(Pair._value_of(a)), offset=offset)
+    (r0, r1), (c0, c1) = a._axis_bounds
+    n = min(r1, c1 - offset) - max(r0, -offset)
+    k = _fresh_dummy(a.formula, 2)
+    body = a.formula.xreplace({axis_idx(0): k, axis_idx(1): k + offset})
+    return Pair(
+        np.trace(np.asarray(a.value), offset=offset),
+        _held_sum(body, (k, max(r0, -offset), max(r0, -offset) + n - 1)),
+        None,
+        steps=(a,),
+    )
+
+
+FUNCTION_TABLE[np.trace] = _trace
 FUNCTION_TABLE[np.nan_to_num] = _nan_to_num
 FUNCTION_TABLE[np.copyto] = _mutating_write(np.copyto)
 FUNCTION_TABLE[np.place] = _mutating_write(np.place)
