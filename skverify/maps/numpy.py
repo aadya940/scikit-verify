@@ -745,7 +745,43 @@ FUNCTION_TABLE[np.quantile] = _quantile_like(np.quantile, 1.0)
 
 def _round(a, decimals=0, **kwargs):
     if isinstance(a, Pair):
-        raise NotImplementedError("rounding a traced value changes the math")
+        # floor(x*10^d + 1/2)/10^d is exact everywhere EXCEPT half-way
+        # ties, where numpy rounds half to even. WHICH values sit on a
+        # tie is a trace fact: refuse only when one actually does, and
+        # record the tie-free hypotheses like median's ordering guards.
+        from ..pair import _GUARDS
+
+        vals = np.asarray(Pair._value_of(a), dtype=float)
+        scale = 10 ** int(decimals)
+        scaled = vals * scale
+        on_tie = np.isclose(np.mod(scaled + 0.5, 1.0), 0.0) & ~np.isclose(
+            scaled, np.round(scaled)
+        )
+        if np.any(on_tie):
+            raise NotImplementedError(
+                "rounding at an exact half-way tie: numpy rounds half "
+                "to even, which has no small exact formula"
+            )
+        sym = axis_idx(0)
+        n = int(np.size(vals))
+        f = a.formula
+        if a._axis_bounds is not None and len(a._axis_bounds) == 1:
+            for k in range(n):
+                _GUARDS.append(
+                    sympy.Ne(
+                        sympy.Mod(f.subs(sym, k) * scale + sympy.Rational(1, 2), 1), 0
+                    )
+                )
+        elif a._axis_bounds is None:
+            _GUARDS.append(
+                sympy.Ne(sympy.Mod(f * scale + sympy.Rational(1, 2), 1), 0)
+            )
+        else:
+            raise NotImplementedError("np.round on >1-D traced arrays")
+        formula = sympy.floor(f * scale + sympy.Rational(1, 2)) / scale
+        return Pair(
+            np.round(vals, decimals), formula, a._axis_bounds, steps=(a,)
+        )
     return np.round(Pair._numeric(np.asarray(a), copy=False), decimals)
 
 

@@ -143,3 +143,23 @@ class TestCoercionHonesty:
         out = to_sympy(f, x)
         assert float(out.value) == pd.Series(x).sum()
         assert out.formula.has(sympy.Sum)
+
+    def test_round_lifts_with_tie_guards(self):
+        def f(x):
+            return np.round(x, 1).sum()
+
+        x = np.array([1.44, -2.07, 3.21, 0.58])
+        out = to_sympy(f, x)
+        X = sympy.IndexedBase("x")
+        got = float(
+            sympy.N(out.formula.doit().subs({X[k]: v for k, v in enumerate(x)}))
+        )
+        assert got == float(f(x))
+        assert out.preconditions.has(sympy.Mod)
+
+    def test_round_at_a_tie_refuses(self):
+        def g(a):
+            return np.round(a)
+
+        with pytest.raises(NotImplementedError):
+            to_sympy(g, np.array([0.5, 1.5]))

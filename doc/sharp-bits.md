@@ -6,18 +6,19 @@ few places a refusal can happen, and what to do instead.
 
 ## 1. Discretization changes the math
 
-`round(x)`, `np.round(x)`, and integer casts of non-integral values
-change what your code computes, and there is no small formula for
-"the rounded value" that stays exact. `round()` on a scalar works and
-records a no-tie assumption; array rounding refuses.
+Rounding is `floor(x*10^d + 1/2)/10^d` -- exact everywhere except
+half-way ties, where numpy rounds half to EVEN. `round()` and
+`np.round()` therefore lift with recorded tie-free assumptions, and
+refuse only when a value actually sits on a tie:
 
 ```python
-np.round(x).mean()
-# NotImplementedError: rounding a traced value changes the math
+np.round(x, 1).sum()          # lifts; assumes Ne(Mod(10*x[k] + 1/2, 1), 0)
+np.round(np.array([0.5]))
+# NotImplementedError: rounding at an exact half-way tie ...
 ```
 
-*Instead:* keep the computation in floats, or accept the recorded
-assumption for scalar rounds.
+Integer casts of non-integral values still refuse: truncation has no
+exact small formula and no tie-style guard rescues it.
 
 ## 2. Strings are not mathematics
 
