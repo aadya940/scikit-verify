@@ -29,6 +29,25 @@ UFUNC_TABLE.update({getattr(np, k): getattr(sympy, v) for k, v in _RENAMED.items
 
 # Others
 UFUNC_TABLE[np.fabs] = sympy.Abs
+UFUNC_TABLE[np.log1p] = lambda x: sympy.log(1 + x)
+UFUNC_TABLE[np.expm1] = lambda x: sympy.exp(x) - 1
+UFUNC_TABLE[np.log2] = lambda x: sympy.log(x) / sympy.log(2)
+UFUNC_TABLE[np.log10] = lambda x: sympy.log(x) / sympy.log(10)
+UFUNC_TABLE[np.exp2] = lambda x: 2**x
+UFUNC_TABLE[np.cbrt] = lambda x: sympy.real_root(x, 3)
+UFUNC_TABLE[np.square] = lambda x: x**2
+UFUNC_TABLE[np.reciprocal] = lambda x: 1 / x
+UFUNC_TABLE[np.radians] = lambda x: x * sympy.pi / 180
+UFUNC_TABLE[np.degrees] = lambda x: x * 180 / sympy.pi
+UFUNC_TABLE[np.deg2rad] = lambda x: x * sympy.pi / 180
+UFUNC_TABLE[np.rad2deg] = lambda x: x * 180 / sympy.pi
+UFUNC_TABLE[np.trunc] = lambda x: sympy.sign(x) * sympy.floor(sympy.Abs(x))
+UFUNC_TABLE[np.hypot] = lambda a, b: sympy.sqrt(a**2 + b**2)
+UFUNC_TABLE[np.logaddexp] = lambda a, b: sympy.log(sympy.exp(a) + sympy.exp(b))
+UFUNC_TABLE[np.logaddexp2] = lambda a, b: sympy.log(2**a + 2**b) / sympy.log(2)
+UFUNC_TABLE[np.ldexp] = lambda x, n: x * 2**n
+UFUNC_TABLE[np.fmod] = lambda a, b: sympy.sign(a) * sympy.Mod(sympy.Abs(a), sympy.Abs(b))
+UFUNC_TABLE[np.positive] = lambda x: x
 UFUNC_TABLE[np.maximum] = sympy.Max
 UFUNC_TABLE[np.minimum] = sympy.Min
 UFUNC_TABLE[np.arctan2] = sympy.atan2

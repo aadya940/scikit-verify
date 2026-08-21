@@ -60,10 +60,17 @@ class TestOpaqueCalls:
 
     def test_unmapped_single_out_ufunc_goes_opaque(self):
         u = Pair.array("u", np.array([1.0, 4.0]))
-        r = np.cbrt(u)
+        r = np.spacing(u)  # genuinely unmapped: float-representation query
         assert isinstance(r.formula, sympy.Indexed)
-        assert str(r.formula.base).startswith("cbrt")
-        assert np.allclose(r.value, np.cbrt(u.value))
+        assert str(r.formula.base).startswith("spacing")
+        assert np.allclose(r.value, np.spacing(u.value))
+
+    def test_cbrt_is_exact_now(self):
+        u = Pair.array("u", np.array([1.0, 8.0]))
+        r = np.cbrt(u)
+        i = sympy.Symbol("i", integer=True)
+        U = sympy.IndexedBase("u")
+        assert float(r.formula.subs(i, 1).subs(U[1], 8.0)) == 2.0
 
     def test_multi_output_ufunc_still_refuses(self):
         u = Pair.array("u", np.array([1.0, 4.0]))
