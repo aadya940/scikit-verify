@@ -1153,8 +1153,13 @@ class Pair:
         if chunk:
             blocks.append(chunk)
         out = CertificateText("\n".join(parts))
-        out._latex = "\n".join(
-            r"$$\begin{aligned}" + "".join(b) + r"\end{aligned}$$"
+        # sympy's own wrapper convention: GitHub's notebook renderer
+        # accepts $\displaystyle ...$ (what every sympy cell emits)
+        # where it rejects $$ blocks
+        out._latex = "\n\n".join(
+            "$\displaystyle \begin{aligned}"
+            + "".join(b)
+            + "\end{aligned}$"
             for b in blocks
         )
         return out
