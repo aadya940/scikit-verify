@@ -266,6 +266,62 @@ def _held_sum(body, *limits):
     return built
 
 
+def _held_prod(body, *limits):
+    """Construct ``Product(body, *limits)`` without hoisting re-evaluation.
+
+    ``Product.__new__`` may run ``piecewise_fold`` on the body, masking only
+    Piecewise terms free of the NEW binder. A Piecewise whose condition
+    references an INNER product's bound variable passes that guard and gets
+    hoisted through its own binder: the condition escapes and the
+    formula is silently wrong (upstream sympy bug, same family as the Sum
+    case). For that hazardous shape the Product is assembled by direct
+    ``Expr.__new__``, skipping the constructor's preprocessing; everything
+    else uses the normal constructor.
+    """
+    if body.has(sympy.Piecewise) and body.has(sympy.Product):
+        # Selector products -- an inner Product whose Piecewise conditions on
+        # the inner product's OWN dummy -- resolve exactly by unrolling.
+        resolutions = {}
+        for inner in body.atoms(sympy.Product):
+            dummies = {lim[0] for lim in inner.limits}
+            if any(
+                pw.has(*dummies)
+                for pw in inner.function.atoms(sympy.Piecewise)
+            ):
+                extents = [
+                    lim[2] - lim[1] + 1 for lim in inner.limits
+                    if lim[2].is_number and lim[1].is_number
+                ]
+                if len(extents) != len(inner.limits) or any(
+                    e > 64 for e in extents
+                ):
+                    continue  # symbolic or large extent: unroll refused
+                try:
+                    resolved = _prune_dead_branches(
+                        sympy.piecewise_fold(inner.doit())
+                    )
+                except Exception:
+                    continue
+                if not resolved.has(sympy.Product):
+                    resolutions[inner] = resolved
+        if resolutions:
+            body = body.xreplace(resolutions)
+    built = sympy.Product(body, *limits)
+    if body.has(sympy.Piecewise) and body.has(sympy.Product):
+        binders = {lim[0] for lim in built.limits} if hasattr(built, "limits") else set()
+        expected_free = body.free_symbols - {l[0] for l in limits}
+        escaped = (built.free_symbols | binders) - expected_free - {l[0] for l in limits}
+        escaped = {e for e in escaped if e in built.free_symbols and e not in expected_free}
+        if escaped:
+            raise NotImplementedError(
+                "multiplying over a Piecewise bound inside an inner Product: sympy's "
+                f"piecewise_fold frees {sorted(map(str, escaped))} through "
+                "its binder (upstream bug); restructure so the mask applies "
+                "before the inner reduction"
+            )
+    return built
+
+
 def _fresh_dummy(formula, n_axes, base="j"):
     """A summation dummy not colliding with any symbol already in the
     formula -- sum(sum(u, axis=0)) must not capture the inner Sum's j.
@@ -296,32 +352,152 @@ def _masked_fuse(a):
 
 
 def _prod(a, axis=None, **kwargs):
-    """np.prod as sympy.Product: Sum's multiplicative sibling."""
-    kwargs = {k: v for k, v in kwargs.items() if v is not np._NoValue}
-    if kwargs or axis is not None:
-        raise NotImplementedError("prod: kwargs/axis not supported yet")
+    prov = _masked_fuse(a) if isinstance(a, Pair) else None
+    if prov is not None and axis is None:
+        src, mask = prov
+        bounds = src._axis_bounds
+        if bounds is not None and len(bounds) == 1:
+            lo, hi = bounds[0]
+            i0 = axis_idx(0)
+            j = _fresh_dummy(sympy.Tuple(src.formula, mask.formula), 1)
+            body = sympy.Piecewise(
+                (src.formula.xreplace({i0: j}), mask.formula.xreplace({i0: j})),
+                (1, True),
+            )
+            return Pair(
+                np.prod(np.asarray(Pair._value_of(a.value), dtype=float)),
+                sympy.Product(body, (j, lo, hi - 1)),
+                None,
+                steps=(a,),
+            )
+    return _prod_plain(a, axis=axis, **kwargs)
+
+
+def _prod_plain(a, axis=None, **kwargs):
+    if isinstance(axis, tuple) and len(axis) == 1:
+        axis = axis[0]  # scipy normalizes axis to tuples internally
+    # numpy passes np._NoValue sentinels for unset options
+    kwargs = {
+        k: v for k, v in kwargs.items() if v is not np._NoValue
+    }
+    out = kwargs.pop("out", None)
+    if out is not None:
+        r = _prod_plain(a, axis=axis, **kwargs)
+        if isinstance(out, tuple):
+            out = out[0]
+        if isinstance(out, Pair):
+            if isinstance(out.value, np.ndarray):
+                out.value[...] = Pair._value_of(r)
+            else:
+                out.value = Pair._value_of(r)
+            out.formula = Pair._formula_of(r)
+            out._axis_bounds = getattr(r, "_axis_bounds", None)
+            return out
+        raise NotImplementedError(
+            "reduction with out= into an untraced buffer: later reads "
+            "of the buffer would silently lose the formula"
+        )
+    where = kwargs.pop("where", True)
+    if where is not True:
+        # a masked product IS the product of the masked selection, with
+        # identity 1 for excluded elements (contrast sum's 0)
+        if not isinstance(where, (Pair, np.ndarray)):
+            where = np.asarray(where)
+        return _prod_plain(
+            _where(where, a, 1.0), axis=axis, **kwargs
+        )
+    keepdims = kwargs.pop("keepdims", False)
+    dt = kwargs.pop("dtype", None)
+    if dt is not None and np.dtype(dt).kind not in "fc" and np.dtype(dt) != object:
+        raise NotImplementedError("np.prod with a non-float dtype changes the math")
+    if kwargs:
+        raise NotImplementedError(f"np.prod kwargs {list(kwargs)} not supported")
+    if keepdims:
+        r = _prod_plain(a, axis=axis)  # refuses first on unsupported axes
+        if isinstance(axis, tuple):
+            raise NotImplementedError("np.prod keepdims with axis tuples")
+        if isinstance(r, Pair):
+            nd = np.ndim(Pair._value_of(a))
+            shape = [1] * nd if axis is None else [
+                1 if ax == (axis % nd) else n
+                for ax, n in enumerate(np.shape(Pair._value_of(a)))
+            ]
+            v = np.reshape(np.asarray(r.value), shape)
+            return Pair(v, r.formula, tuple((0, int(n)) for n in shape), steps=(r,))
+        return np.reshape(r, [1] * np.ndim(Pair._value_of(a))) if axis is None else r
+
+    if isinstance(a, Pair) and a.domain is None:
+        return a  # the product of a scalar is itself
     if not isinstance(a, Pair):
         if isinstance(a, np.ndarray) and a.dtype == object:
-            elems = list(a.ravel())
-            out = elems[0]
-            for e in elems[1:]:
-                out = out * e
+            if axis is None or a.ndim == 1:
+                elems = list(a.ravel())
+                if not elems:
+                    return np.prod(a, axis=axis)
+                out = elems[0]
+                for e in elems[1:]:
+                    out = out * e  # element dunders keep the trace
+                return out
+            # per-axis on a bag: multiply each 1-D slice along the axis
+            ax = axis % a.ndim
+            out_shape = a.shape[:ax] + a.shape[ax + 1 :]
+            out = np.empty(out_shape, dtype=object)
+            for oidx in np.ndindex(out_shape):
+                idx = oidx[:ax] + (slice(None),) + oidx[ax:]
+                lane = a[idx]
+                if len(lane) == 0:
+                    out[oidx] = np.prod(lane)
+                    continue
+                product = lane[0]
+                for e in lane[1:]:
+                    product = product * e
+                out[oidx] = product
             return out
-        return np.prod(a)
-    if a._axis_bounds is None:
-        return a
-    if len(a._axis_bounds) != 1:
-        # flatten first: full products are order-free
-        return _prod(a.reshape(-1))
-    lo, hi = a._axis_bounds[0]
-    i0 = axis_idx(0)
-    j = _fresh_dummy(a.formula, 1)
-    return Pair(
-        np.prod(np.asarray(Pair._value_of(a.value), dtype=float)),
-        sympy.Product(a.formula.xreplace({i0: j}), (j, lo, hi - 1)),
-        None,
-        steps=(a,),
+        return np.prod(a, axis=axis)
+
+    a = Pair(
+        a.value, Pair._bridge_numeric(a.formula), a._axis_bounds, steps=(a,)
+    )  # np.prod(u > 0) counts with 0/1 via Product's Piecewise bridge
+    bounds = a._axis_bounds
+    if isinstance(axis, tuple):
+        raise NotImplementedError("axis tuples not supported yet")
+    if axis is not None and not (axis == 0 and len(bounds) == 1):
+        # per-axis reduction: bind ONE letter, survivors renumber down
+        # p (3x4), axis=0:  Product(p[j, i], (j, 0, 2))   domain (0, 4)
+        # p (3x4), axis=1:  Product(p[i, j], (j, 0, 3))   domain (0, 3)
+        k = axis % len(bounds)
+        j = _fresh_dummy(a.formula, len(bounds))
+        rename = {axis_idx(k): j}
+        rename.update(
+            {axis_idx(ax): axis_idx(ax - 1) for ax in range(k + 1, len(bounds))}
+        )
+        lo, hi = bounds[k]
+        formula = _held_prod(a.formula.xreplace(rename), (j, lo, hi - 1))
+        new_bounds = bounds[:k] + bounds[k + 1 :]
+        return Pair(
+            np.prod(a.value, axis=k),
+            formula,
+            new_bounds or None,
+            steps=(a,),
+        )
+
+    # one Product per axis, innermost axis innermost:
+    # 1-D: Product(p[j], (j, 0, n-1))                      (unchanged output)
+    # 2-D: Product(Product(p[j0, j1], (j1, 0, m-1)), (j0, 0, n-1))
+    if len(bounds) == 1:
+        dummies = [_fresh_dummy(a.formula, len(bounds))]
+    else:
+        dummies = [
+            _fresh_dummy(a.formula, len(bounds), base=f"j{ax}")
+            for ax in range(len(bounds))
+        ]
+    formula = a.formula.xreplace(
+        {axis_idx(ax): d for ax, d in enumerate(dummies)}
     )
+    for ax in reversed(range(len(bounds))):
+        lo, hi = bounds[ax]
+        formula = _held_prod(formula, (dummies[ax], lo, hi - 1))  # inclusive
+    return Pair(np.prod(a.value), formula, None, steps=(a,))
 
 
 def _clip_entry(a, a_min=None, a_max=None, **kwargs):
