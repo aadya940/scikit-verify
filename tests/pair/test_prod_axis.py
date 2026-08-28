@@ -105,7 +105,10 @@ class TestProdUnchangedPaths:
         # bag product via element dunders keeps trace
         assert np.isclose(float(r.value), np.prod(v.value))
         # formula should be product of element formulas
-        assert r.formula == v[0].formula * v[1].formula * v[2].formula * v[3].formula * v[4].formula
+        assert r.formula == (
+            v[0].formula * v[1].formula * v[2].formula
+            * v[3].formula * v[4].formula
+        )
 
     def test_object_ndarray_bag_axis(self):
         p = Pair.array("p", np.arange(1.0, 7.0).reshape(2, 3))
@@ -146,10 +149,56 @@ class TestProdWhereOut:
         # excluded elements become 1
         expected = np.prod(np.where(mask, p.value, 1.0))
         assert np.isclose(r.value, expected)
+        # formula is a Product over a Piecewise with identity 1
+        assert r.formula.has(sympy.Product)
+        assert r.formula.has(sympy.Piecewise)
+        assert r.formula.has(P)
+        # numeric evaluation via doit + const-table mapping
+        const_base = next(
+            b for b in r.formula.atoms(sympy.IndexedBase)
+            if str(b) != "p"
+        )
+        mapping = {
+            P[row, col]: float(p.value[row, col])
+            for row in range(3) for col in range(4)
+        }
+        mapping.update(
+            {
+                const_base[row, col]: int(mask[row, col])
+                for row in range(3) for col in range(4)
+            }
+        )
+        assert np.isclose(
+            float(sympy.N(r.formula.doit().xreplace(mapping))), expected
+        )
+
         # also check per-axis where
         r0 = np.prod(p, axis=0, where=mask)
         expected0 = np.prod(np.where(mask, p.value, 1.0), axis=0)
         assert np.allclose(r0.value, expected0)
+        # per-axis formula is Product over Piecewise with identity 1
+        assert isinstance(r0.formula, sympy.Product)
+        assert r0.formula.has(P)
+        assert r0.formula.has(sympy.Piecewise)
+        const_base0 = next(
+            b for b in r0.formula.atoms(sympy.IndexedBase)
+            if str(b) != "p"
+        )
+        expected_pw = sympy.Piecewise(
+            (P[JD, AXIS0], sympy.Ne(const_base0[JD, AXIS0], 0)),
+            (1.0, True),
+        )
+        assert r0.formula.function == expected_pw
+        assert r0.formula.limits == ((JD, 0, 2),)
+        # per-column doit evaluation
+        for col in range(4):
+            expr = r0.formula.doit().subs(AXIS0, col)
+            m = {P[row, col]: float(p.value[row, col]) for row in range(3)}
+            m.update(
+                {const_base0[row, col]: int(mask[row, col]) for row in range(3)}
+            )
+            got = float(sympy.N(expr.xreplace(m)))
+            assert np.isclose(got, expected0[col])
 
     def test_where_pair_mask(self):
         v = Pair.array("v", np.array([1.0, 2.0, 3.0, 4.0]))
@@ -157,6 +206,21 @@ class TestProdWhereOut:
         r = np.prod(v, where=cond)
         expected = np.prod(np.where(v.value > 2.0, v.value, 1.0))
         assert np.isclose(r.value, expected)
+        # formula is Product over Piecewise with pair condition
+        V = sympy.IndexedBase("v")
+        JD2 = sympy.Symbol("j", integer=True)
+        assert r.formula == sympy.Product(
+            sympy.Piecewise((V[JD2], V[JD2] > 2.0), (1.0, True)),
+            (JD2, 0, 3),
+        )
+        assert r.formula.has(sympy.Piecewise)
+        assert r.formula.has(V)
+        assert np.isclose(
+            float(r.formula.doit().xreplace(
+                {V[i]: float(v.value[i]) for i in range(4)}
+            )),
+            expected,
+        )
 
     def test_out_pair(self, p):
         out = Pair.array("o", np.zeros(4))

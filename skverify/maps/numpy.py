@@ -202,9 +202,13 @@ def _held_sum(body, *limits):
     references an INNER sum's bound variable passes that guard and gets
     hoisted through its own binder: the condition escapes and the
     formula is silently wrong (upstream sympy bug, caught by the
-    two-lane fuzzer). For that hazardous shape the Sum is assembled by
-    direct ``Expr.__new__``, skipping the constructor's preprocessing;
-    everything else uses the normal constructor.
+    two-lane fuzzer). Selector sums (inner Sum over its own dummy's
+    Piecewise) are resolved exactly by unrolling (doit + piecewise_fold
+    + prune) before construction; the Sum is then built via the normal
+    constructor. Any residual binder escape is detected by free-symbol
+    comparison and refused — a bypass via ``Expr.__new__`` would be
+    momentarily correct but later doit/simplify would re-corrupt, so
+    refusal is the only safe output.
     """
     if body.has(sympy.Piecewise) and body.has(sympy.Sum):
         # Selector sums -- an inner Sum whose Piecewise conditions on
@@ -274,9 +278,12 @@ def _held_prod(body, *limits):
     references an INNER product's bound variable passes that guard and gets
     hoisted through its own binder: the condition escapes and the
     formula is silently wrong (upstream sympy bug, same family as the Sum
-    case). For that hazardous shape the Product is assembled by direct
-    ``Expr.__new__``, skipping the constructor's preprocessing; everything
-    else uses the normal constructor.
+    case). Selector products (inner Product over its own dummy's Piecewise)
+    are resolved exactly by unrolling (doit + piecewise_fold + prune) before
+    construction; the Product is then built via the normal constructor. Any
+    residual binder escape is detected by free-symbol comparison and refused
+    — a bypass via ``Expr.__new__`` would be momentarily correct but later
+    doit/simplify would re-corrupt, so refusal is the only safe output.
     """
     if body.has(sympy.Piecewise) and body.has(sympy.Product):
         # Selector products -- an inner Product whose Piecewise conditions on
