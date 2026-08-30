@@ -134,13 +134,23 @@ class Pair:
             # recurrence folder keeps formulas finite. The provenance
             # sum OVERESTIMATES under sharing, so the real size gets
             # one exact check before the wall fires.
-            real = sympy.count_ops(formula)
-            if real < 10_000 or (
-                getattr(_session, "instrumented", False) and real < 200_000
-            ):
+            from .helpers import tree_nodes_capped
+
+            limit = (
+                200_000
+                if getattr(_session, "instrumented", False)
+                else 10_000
+            )
+            # size measured in tree nodes (~5 per op on measured
+            # certificates): the tripwire needs magnitude, and
+            # count_ops pays heavy per-node sympy machinery -- on the
+            # DAG-shaped scatters this wall exists for, it is
+            # exponential outright
+            nodes = tree_nodes_capped(formula, 5 * limit)
+            if nodes is not None:
                 # false alarm, or already instrumented (nowhere to
                 # route): recalibrate and let the honest size ride
-                self._fsize = int(real) + 1
+                self._fsize = nodes // 5 + 1
             elif getattr(_session, "instrumented", False):
                 raise NotImplementedError(
                     "formula grows without bound and the loop cannot "
@@ -502,6 +512,7 @@ class Pair:
 
         _axis_bounds are reversed in order the transpose operation for example.
         """
+        sym_map = {}
         for old_sym, expr in index_map.items():
             expr = sympy.sympify(expr)
             if not expr.free_symbols <= set(_AXIS_SYMBOLS):
@@ -514,7 +525,13 @@ class Pair:
                 raise NotImplementedError(
                     f"index map {old_sym} -> {expr} is not affine"
                 )
-        formula = self.formula.subs(index_map, simultaneous=True)
+            sym_map[old_sym] = expr
+        from .helpers import swap_probes
+
+        # atomic Symbol keys: one structural pass IS simultaneous, and
+        # the memo keeps DAG-shaped formulas linear where sympy's
+        # subs(simultaneous=True) walks them as exponential trees
+        formula = swap_probes(self.formula, sym_map, axis_idx(0))
         out = Pair(value, formula, domain=axis_bounds or None, steps=(self,))
         # pure axis permutations (transpose, rollaxis) are invertible
         # views in numpy: remember the parent so in-place writes on the
@@ -2100,9 +2117,25 @@ class Pair:
             for x in inputs
         ]
 
+        from .helpers import tree_nodes_capped
+
+        if any(
+            isinstance(f, sympy.Basic)
+            and tree_nodes_capped(f, 8192) is None
+            for f in formulas
+        ):
+            # giant operands (unfoldable loop bodies) are destined to
+            # fold into probes or hit the growth wall; paying sympy's
+            # constructor simplification on them (Abs.eval -> signsimp
+            # -> fraction is superlinear) buys nothing. Unevaluated is
+            # the same mathematics.
+            with sympy.evaluate(False):
+                built = target(*formulas)
+        else:
+            built = target(*formulas)
         return Pair(
             ufunc(*values),
-            target(*formulas),
+            built,
             domain,
             steps=Pair._steps_of(*inputs),
         )

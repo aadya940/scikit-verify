@@ -7,7 +7,7 @@ import sympy
 
 from .pair import _GUARDS, _OPAQUE, Pair
 from .session import current as _session
-from .helpers import axis_idx
+from .helpers import axis_idx, ops_capped as _ops_capped
 
 
 def to_sympy(fn, *args, **kwargs):
@@ -145,26 +145,15 @@ def to_sympy(fn, *args, **kwargs):
                     return _sweep_passes(e)
 
             def _sweep_passes(e):
-                for _ in range(4):
-                    hit = e.free_symbols & mkeys
-                    idx_hit = e.has(sympy.Indexed) and any(
-                        getattr(x.base, "label", None) in mkeys
-                        for x in e.atoms(sympy.Indexed)
-                    )
-                    if not hit and not idx_hit:
-                        break
-                    if hit:
-                        e = e.xreplace({d: mirror[d] for d in hit})
-                    if idx_hit:
-                        from .helpers import axis_idx
+                from .helpers import axis_idx, has_probe, swap_probes
 
-                        e = e.replace(
-                            lambda x: isinstance(x, sympy.Indexed)
-                            and getattr(x.base, "label", None) in mkeys,
-                            lambda x: mirror[x.base.label].subs(
-                                axis_idx(0), x.indices[0]
-                            ),
-                        )
+                for _ in range(4):
+                    if not has_probe(e, mkeys):
+                        break
+                    # scalar probes and Indexed slots in ONE memoized
+                    # pass: scatter formulas are DAGs, sympy's own
+                    # walkers re-visit shared subtrees exponentially
+                    e = swap_probes(e, mirror, axis_idx(0))
                 return e
 
             if hasattr(out, "formula"):
@@ -199,11 +188,21 @@ def to_sympy(fn, *args, **kwargs):
             # the monolith for anyone who wants it
             from .recurrence import inline
 
+            from .helpers import ops_capped
+
             rec_map = dict(_session.recurrences)
-            total = sum(sympy.count_ops(v) for v in rec_map.values())
+            budget = 2000
+            total = 0
+            pieces = list(rec_map.values())
             if hasattr(out, "formula") and isinstance(out.formula, sympy.Basic):
-                total += sympy.count_ops(out.formula)
-            if total < 2000:
+                pieces.append(out.formula)
+            for v in pieces:
+                c = ops_capped(v, budget - total)
+                if c is None:
+                    total = budget
+                    break
+                total += c
+            if total < budget:
                 if hasattr(out, "formula") and isinstance(out.formula, sympy.Basic):
                     f = out.formula
                     if isinstance(f, sympy.NDimArray):
@@ -339,7 +338,7 @@ def _repack(out):
             folded = _fold_poly(out.formula)
             if folded is None and isinstance(out.formula, sympy.Add):
                 folded = _fold_add(out.formula)
-            if folded is None and sympy.count_ops(out.formula) < 2000:
+            if folded is None and _ops_capped(out.formula, 2000) is not None:
                 # expand is multinomial: a 4th power of a 50-term sum
                 # would be millions of terms. Big formulas stay factored
                 expanded = sympy.expand(out.formula)
@@ -499,7 +498,7 @@ def _recompress(formulas):
     element (exact sympy equality); no proof, no fold: returns None and
     the caller keeps the honest unrolled Array. Tries strides 1..3.
     """
-    if any(sympy.count_ops(f) > 1500 for f in formulas):
+    if any(_ops_capped(f, 1501) is None for f in formulas):
         # proof-by-expand is superlinear; on big elements (folded-loop
         # results embedding recurrence state) the honest Array wins
         return None
