@@ -177,7 +177,11 @@ def swap_probes(expr, meanings, axis0):
         if isinstance(e, sympy.Indexed):
             label = getattr(e.base, "label", None)
             if label in scope:
-                memo[e] = meanings[label].xreplace({axis0: e.indices[0]})
+                # scope-aware recursion, not xreplace: a meaning that
+                # binds the axis symbol in a Sum must keep its binder
+                memo[e] = swap_probes(
+                    meanings[label], {axis0: e.indices[0]}, axis0
+                )
                 continue
         if isinstance(e, sympy.tensor.indexed.IndexedBase) or not e.args:
             memo[e] = e
