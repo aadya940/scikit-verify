@@ -66,6 +66,8 @@ class Iterate(sympy.Function):
     symbolic manipulation; ``doit`` unrolls exactly.
     """
 
+    __skv_held__ = True
+
     @classmethod
     def eval(cls, step, init, count):
         return None  # always hold: unrolling is the caller's choice
@@ -90,6 +92,8 @@ class Iterate(sympy.Function):
 
 class Nth(sympy.Function):
     """``Nth(tuple_expr, i)``: held component access, unrolled by doit."""
+
+    __skv_held__ = True
 
     @classmethod
     def eval(cls, expr, i):

@@ -254,6 +254,29 @@ def to_sympy(fn, *args, **kwargs):
                 out.definitions = needed
         else:
             out.definitions = {}
+        # exit normal form: anything constructed under evaluate(False)
+        # along the way (giant-operand ufunc builds, probe repairs)
+        # re-evaluates before the user sees it. Held Sum/Product
+        # subtrees pass through verbatim -- re-running their
+        # constructors is the piecewise_fold hoist hazard.
+        from .helpers import reevaluated
+
+        if hasattr(out, "formula"):
+            f = out.formula
+            if isinstance(f, sympy.NDimArray):
+                out.formula = sympy.ImmutableDenseNDimArray(
+                    [reevaluated(e) for e in f], f.shape
+                )
+            elif isinstance(f, sympy.Basic):
+                out.formula = reevaluated(f)
+        for i, g in enumerate(_GUARDS):
+            if isinstance(g, sympy.Basic):
+                _GUARDS[i] = reevaluated(g)
+        if getattr(out, "definitions", None):
+            out.definitions = {
+                k: reevaluated(v) if isinstance(v, sympy.Basic) else v
+                for k, v in out.definitions.items()
+            }
         out.preconditions = sympy.And(*_GUARDS) if _GUARDS else sympy.true
         records = list(_OPAQUE)
         if _session.hashed:

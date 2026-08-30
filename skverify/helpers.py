@@ -225,3 +225,76 @@ def tree_nodes_capped(expr, cap):
             return None
         stack.extend(a for a in e.args if isinstance(a, sympy.Basic))
     return n
+
+
+def reevaluated(expr, cap=200_000):
+    """Rebuild ``expr`` bottom-up under normal evaluation, restoring
+    the evaluated normal form after evaluate(False) construction.
+
+    Held structures -- Sum, Product, Iterate-style Functions with a
+    ``__skv_held__`` marker -- and every ANCESTOR of one pass through
+    verbatim: re-running a guarded reduction constructor is the
+    piecewise_fold hoist hazard, and evaluating a parent (Abs.eval ->
+    expand) with a held child as argument is the hang inline() guards
+    against. Only subtrees fully free of held nodes re-evaluate: an
+    unevaluated Add(2, 3) becomes 5, an unevaluated Abs collapses.
+    Memoized (DAG-linear) and capped: past ``cap`` tree nodes the
+    expression returns unchanged -- at that size it is wall territory
+    and cosmetic normal form is moot.
+    """
+    if not isinstance(expr, sympy.Basic):
+        return expr
+    if tree_nodes_capped(expr, cap) is None:
+        return expr
+    held = (sympy.Sum, sympy.Product)
+
+    def is_held(e):
+        return isinstance(e, held) or getattr(e, "__skv_held__", False)
+
+    memo = {}  # e -> (result, tainted)
+    stack = [(expr, False)]
+    while stack:
+        e, done = stack.pop()
+        if not isinstance(e, sympy.Basic) or e in memo:
+            continue
+        if done:
+            tainted = any(
+                memo[a][1]
+                for a in e.args
+                if isinstance(a, sympy.Basic) and a in memo
+            )
+            args = tuple(
+                memo[a][0] if isinstance(a, sympy.Basic) and a in memo else a
+                for a in e.args
+            )
+            unchanged = all(a is b for a, b in zip(args, e.args))
+            try:
+                if tainted:
+                    # clean siblings normalize, but the node itself
+                    # must not re-evaluate with a held child as
+                    # argument (Abs.eval on an Iterate is the hang;
+                    # a reduction ctor re-run is the hoist hazard).
+                    # Add/Mul are exempt: flattening runs no .eval
+                    if e.func in (sympy.Add, sympy.Mul):
+                        memo[e] = (e.func(*args), True)
+                    elif unchanged:
+                        memo[e] = (e, True)
+                    else:
+                        with sympy.evaluate(False):
+                            memo[e] = (e.func(*args), True)
+                else:
+                    memo[e] = (e.func(*args), False)
+            except (TypeError, ValueError):
+                memo[e] = (e, tainted)  # exotic node: keep the original
+            continue
+        if is_held(e):
+            memo[e] = (e, True)
+            continue
+        if not e.args:
+            memo[e] = (e, False)
+            continue
+        stack.append((e, True))
+        for a in e.args:
+            if isinstance(a, sympy.Basic):
+                stack.append((a, False))
+    return memo.get(expr, (expr, False))[0]
