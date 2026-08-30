@@ -20,6 +20,7 @@ Welcome to scikit-verify's documentation!
    README
    api
    design_philosophy
+   architecture
 
 Indices and tables
 ==================
