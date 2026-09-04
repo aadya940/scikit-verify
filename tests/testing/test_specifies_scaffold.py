@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import sympy
 
-from skverify.testing import Verdict, check_formula, specifies
+from skverify.testing import Verdict, _describe_difference, check_formula, specifies
 
 N = 5
 V = sympy.IndexedBase("v")
@@ -104,3 +104,84 @@ class TestDecorator:
             return center, (VALS.copy(),)
 
         check()
+
+
+class TestDiffersMessage:
+    """Regression tests for the formula-difference diagnostic."""
+
+    def test_large_diagnostic_bounded(self):
+        v = check_formula(
+            f_affine_wrong, (VALS.copy(),), 3 * V[i] + 1, indices=(i,)
+        )
+        assert v.tier == "differs"
+        msg = v.message()
+        assert "your spec" in msg
+        assert "the code" in msg
+        assert len(msg.splitlines()) <= 25
+
+    def test_denominator_difference_named(self):
+        n = sympy.Symbol("n")
+        j = sympy.Dummy("j", integer=True)
+        mean = sympy.Sum(V[j], (j, 0, n - 1)) / n
+        spec = sympy.Sum((V[j] - mean) ** 2, (j, 0, n - 1)) / n
+        code = sympy.Sum((V[j] - mean) ** 2, (j, 0, n - 1)) / (n - 1)
+        verdict = Verdict(
+            tier="differs", shape=(), spec=spec, traced=code,
+            counterexample={
+                "v": [1, 4, 2, 8, 5],
+                "spec value": 6.5599,
+                "code value": 8.1999,
+            },
+        )
+        msg = verdict.message()
+        assert "difference: denominator" in msg
+        assert "n vs n - 1" in msg
+
+    def test_numerator_difference_named(self):
+        j = sympy.Dummy("j", integer=True)
+        mean = sympy.Sum(V[j], (j, 0, N - 1)) / N
+        spec = sympy.Sum((V[j] - mean) ** 2, (j, 0, N - 1)) / N
+        code = sympy.Sum(V[j] ** 2, (j, 0, N - 1)) / N
+        verdict = Verdict(
+            tier="differs", shape=(), spec=spec, traced=code,
+            counterexample={
+                "v": [1, 4, 2, 8, 5],
+                "spec value": 6.5599,
+                "code value": 30.0,
+            },
+        )
+        msg = verdict.message()
+        assert "difference: numerator" in msg
+
+    def test_sum_term_difference_identified(self):
+        a, b, c = sympy.symbols("a b c")
+        verdict = Verdict(
+            tier="differs", shape=(), spec=a + b + c, traced=a + b,
+        )
+        msg = verdict.message()
+        assert "difference:" in msg
+        assert "c" in msg
+
+    def test_reordered_sums_no_false_hint(self):
+        a, b, c = sympy.symbols("a b c")
+        verdict = Verdict(
+            tier="differs", shape=(), spec=a + b + c, traced=c + a + b,
+        )
+        msg = verdict.message()
+        assert "difference:" not in msg
+
+    def test_fallback_no_misleading_hint(self):
+        a, b, c, d = sympy.symbols("a b c d")
+        verdict = Verdict(
+            tier="differs", shape=(), spec=a * b, traced=c * d,
+        )
+        msg = verdict.message()
+        assert "difference:" not in msg
+
+    def test_both_num_and_den_differ_no_hint(self):
+        a, b, c, d = sympy.symbols("a b c d")
+        verdict = Verdict(
+            tier="differs", shape=(), spec=a / b, traced=c / d,
+        )
+        msg = verdict.message()
+        assert "difference:" not in msg
