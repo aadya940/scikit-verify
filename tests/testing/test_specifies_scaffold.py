@@ -104,3 +104,33 @@ class TestDecorator:
             return center, (VALS.copy(),)
 
         check()
+
+
+class TestDiffersMessage:
+    """Regression tests for the formula-difference diagnostic."""
+
+    def test_large_diagnostic_bounded(self):
+        n_terms = 300
+        large_spec = sum(sympy.Symbol(f"a{k}") for k in range(n_terms))
+        large_code = sum(sympy.Symbol(f"b{k}") for k in range(n_terms))
+        verdict = Verdict(
+            tier="differs", shape=(), spec=large_spec, traced=large_code,
+            counterexample={"v": [1, 2, 3]},
+        )
+        msg = verdict.message()
+        assert "your spec" in msg
+        assert "the code" in msg
+        assert len(msg.splitlines()) <= 25
+        assert "[cut:" in msg
+
+    def test_truncated_formula_full_expression_available(self):
+        n_terms = 300
+        large_spec = sum(sympy.Symbol(f"a{k}") for k in range(n_terms))
+        large_code = sum(sympy.Symbol(f"b{k}") for k in range(n_terms))
+        verdict = Verdict(
+            tier="differs", shape=(), spec=large_spec, traced=large_code,
+        )
+        msg = verdict.message()
+        assert "[cut:" in msg
+        assert len(str(verdict.traced)) > 400
+        assert len(str(verdict.spec)) > 400

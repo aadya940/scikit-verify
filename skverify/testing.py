@@ -20,6 +20,23 @@ import sympy
 from .api import to_sympy
 from .helpers import axis_idx, reevaluated
 
+_FORMULA_CHAR_LIMIT = 400
+
+
+def _truncate_formula(expr):
+    """Return a display string for *expr*, truncating with a visible
+    marker when the text representation exceeds the character limit.
+    The original SymPy expression is never modified."""
+    text = str(expr)
+    if len(text) <= _FORMULA_CHAR_LIMIT:
+        return text
+    truncated = text[:_FORMULA_CHAR_LIMIT]
+    remaining = len(text) - _FORMULA_CHAR_LIMIT
+    return (
+        f"{truncated} ... [cut: {remaining} more characters; "
+        f"the full formula is in verdict.traced] ..."
+    )
+
 
 @dataclass
 class Verdict:
@@ -42,8 +59,8 @@ class Verdict:
         if self.matches or self.tier == "incomplete":
             return head + (f"\n  {self.detail}" if self.detail else "")
         lines = [head]
-        lines.append(f"  your spec:  {self.spec}")
-        lines.append(f"  the code:   {self.traced}")
+        lines.append(f"  your spec:  {_truncate_formula(self.spec)}")
+        lines.append(f"  the code:   {_truncate_formula(self.traced)}")
         if self.counterexample:
             lines.append("  counterexample:")
             for k, v in self.counterexample.items():
