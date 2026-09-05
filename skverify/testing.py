@@ -20,55 +20,22 @@ import sympy
 from .api import to_sympy
 from .helpers import axis_idx, reevaluated
 
+_FORMULA_CHAR_LIMIT = 400
 
-def _describe_difference(spec_expr, code_expr):
-    """Return a short human-readable string describing *where* two
-    sympy expressions differ, or ``None`` when the structural
-    comparison is ambiguous.
 
-    Conservative by design: a wrong hint is worse than no hint.
-    Only fires for two safe cases:
-
-    1. Both are fractions (denominator != 1 for at least one side):
-       compare numerators and denominators independently via
-       ``sympy.fraction``.
-    2. Both are sums (``sympy.Add``): compare term sets so reordered
-       equivalents are not flagged.
-    """
-    if not (isinstance(spec_expr, sympy.Basic) and isinstance(code_expr, sympy.Basic)):
-        return None
-
-    # --- fraction comparison ---
-    s_num, s_den = sympy.fraction(spec_expr)
-    c_num, c_den = sympy.fraction(code_expr)
-    s_is_frac = s_den != 1
-    c_is_frac = c_den != 1
-    if s_is_frac or c_is_frac:
-        num_same = s_num == c_num
-        den_same = s_den == c_den
-        if num_same and not den_same:
-            return f"denominator, {s_den} vs {c_den}"
-        if den_same and not num_same:
-            return f"numerator, {s_num} vs {c_num}"
-        if not num_same and not den_same:
-            return None  # both differ — too ambiguous for a safe hint
-
-    # --- sum-term comparison ---
-    if isinstance(spec_expr, sympy.Add) and isinstance(code_expr, sympy.Add):
-        s_terms = set(spec_expr.args)
-        c_terms = set(code_expr.args)
-        only_spec = s_terms - c_terms
-        only_code = c_terms - s_terms
-        if not only_spec and not only_code:
-            return None  # identical term sets (reordered)
-        parts = []
-        if only_spec:
-            parts.append(f"terms only in your spec: {', '.join(str(t) for t in sorted(only_spec, key=str))}")
-        if only_code:
-            parts.append(f"terms only in the code: {', '.join(str(t) for t in sorted(only_code, key=str))}")
-        return "; ".join(parts)
-
-    return None
+def _truncate_formula(expr):
+    """Return a display string for *expr*, truncating with a visible
+    marker when the text representation exceeds the character limit.
+    The original SymPy expression is never modified."""
+    text = str(expr)
+    if len(text) <= _FORMULA_CHAR_LIMIT:
+        return text
+    truncated = text[:_FORMULA_CHAR_LIMIT]
+    remaining = len(text) - _FORMULA_CHAR_LIMIT
+    return (
+        f"{truncated} ... [cut: {remaining} more characters; "
+        f"the full formula is in verdict.traced] ..."
+    )
 
 
 @dataclass
@@ -92,11 +59,8 @@ class Verdict:
         if self.matches or self.tier == "incomplete":
             return head + (f"\n  {self.detail}" if self.detail else "")
         lines = [head]
-        lines.append(f"  your spec:  {self.spec}")
-        lines.append(f"  the code:   {self.traced}")
-        hint = _describe_difference(self.spec, self.traced)
-        if hint:
-            lines.append(f"  difference: {hint}")
+        lines.append(f"  your spec:  {_truncate_formula(self.spec)}")
+        lines.append(f"  the code:   {_truncate_formula(self.traced)}")
         if self.counterexample:
             lines.append("  counterexample:")
             for k, v in self.counterexample.items():
