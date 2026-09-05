@@ -123,7 +123,35 @@ def check_formula(fn, args, spec, indices=(), assume=(), samples=3):
         )
     shape = tuple(np.shape(out.value))
     bound = {sym: axis_idx(k) for k, sym in enumerate(indices)}
+    # traced scalar symbols carry real=True; a user's plain
+    # Symbol("u") must still mean the same thing. Bind by name.
+    if isinstance(out.formula, sympy.Basic):
+        traced_syms = out.formula.free_symbols
+    elif isinstance(out.formula, sympy.NDimArray):
+        traced_syms = set().union(
+            *(e.free_symbols for e in out.formula if isinstance(e, sympy.Basic))
+        )
+    else:
+        traced_syms = set()
+    by_name = {t.name: t for t in traced_syms if isinstance(t, sympy.Symbol)}
+    user_syms = set(spec.free_symbols)
+    for f in assume:
+        if isinstance(f, sympy.Basic):
+            user_syms |= f.free_symbols
+    for sym in user_syms:
+        if (
+            isinstance(sym, sympy.Symbol)
+            and sym not in bound
+            and sym.name in by_name
+            and sym != by_name[sym.name]
+        ):
+            bound[sym] = by_name[sym.name]
     spec_b = spec.xreplace(bound) if bound else spec
+    if bound and assume:
+        assume = [
+            f.xreplace(bound) if isinstance(f, sympy.Basic) else f
+            for f in assume
+        ]
 
     entries = list(np.ndindex(shape)) if shape else [()]
     sampled = False
@@ -264,6 +292,98 @@ def _zero_within_budget(d, seconds=10):
     return False
 
 
+
+
+def _apply_assumptions(expr, assume):
+    """Simplify ``expr`` using the facts in ``assume``, so stated
+    domain knowledge closes proofs instead of only steering sample
+    points.
+
+    Rules, each fired only when a fact matches the arguments exactly
+    or up to a cheap ``expand``:
+
+    - ``a < b`` or ``a <= b``: ``Min(a, b) -> a``, ``Max(a, b) -> b``
+    - ``x > 0``:  ``Abs(x) -> x``,  ``sign(x) -> 1``
+    - ``x >= 0``: ``Abs(x) -> x``
+    - ``x < 0``:  ``Abs(x) -> -x``, ``sign(x) -> -1``
+    - ``Eq(lhs, rhs)``: substitute ``lhs -> rhs`` (a stated identity
+      holds everywhere on the claimed domain)
+
+    A fact that is too weak fires nothing: ``Ne(a, b)`` leaves
+    ``Min(a, b)`` alone. Facts apply to BOTH the spec and the traced
+    formula, so neither side is privileged.
+    """
+    if not assume or not isinstance(expr, sympy.Basic):
+        return expr
+
+    less = []      # (small, big) from a < b and a <= b
+    pos, neg, nonneg = [], [], []
+    eqs = {}
+    for fact in assume:
+        if not isinstance(fact, sympy.Basic):
+            continue
+        if isinstance(fact, sympy.Eq):
+            eqs[fact.lhs] = fact.rhs
+            continue
+        if isinstance(fact, (sympy.Gt, sympy.Ge)):
+            small, big = fact.rhs, fact.lhs
+            strict = isinstance(fact, sympy.Gt)
+        elif isinstance(fact, (sympy.Lt, sympy.Le)):
+            small, big = fact.lhs, fact.rhs
+            strict = isinstance(fact, sympy.Lt)
+        else:
+            continue
+        less.append((small, big))
+        if small == 0:
+            (pos if strict else nonneg).append(big)
+        if big == 0 and strict:
+            neg.append(small)
+
+    def _same(x, y):
+        if x == y:
+            return True
+        try:
+            return sympy.expand(x - y) == 0
+        except Exception:
+            return False
+
+    for _ in range(3):  # nested Min/Abs resolve over a few rounds
+        m = dict(eqs)
+        for node in expr.atoms(sympy.Min, sympy.Max):
+            if len(node.args) != 2:
+                continue
+            x, y = node.args
+            for small, big in less:
+                if (_same(x, small) and _same(y, big)) or (
+                    _same(y, small) and _same(x, big)
+                ):
+                    m[node] = small if isinstance(node, sympy.Min) else big
+                    break
+        for node in expr.atoms(sympy.Abs):
+            # sympy canonicalizes the argument's sign, so a fact about
+            # b - a must also match an argument stored as a - b
+            x = node.args[0]
+            if any(_same(x, p) for p in pos + nonneg) or any(
+                _same(-x, n) for n in neg
+            ):
+                m[node] = x
+            elif any(_same(-x, p) for p in pos + nonneg) or any(
+                _same(x, n) for n in neg
+            ):
+                m[node] = -x
+        for node in expr.atoms(sympy.sign):
+            x = node.args[0]
+            if any(_same(x, p) for p in pos) or any(_same(-x, n) for n in neg):
+                m[node] = sympy.Integer(1)
+            elif any(_same(-x, p) for p in pos) or any(_same(x, n) for n in neg):
+                m[node] = sympy.Integer(-1)
+        m = {k: v for k, v in m.items() if k in expr.atoms(type(k)) or k in eqs}
+        new = expr.xreplace(m) if m else expr
+        if new == expr:
+            break
+        expr = new
+    return expr
+
 def _entry_equal(t, s, entry, samples, assume=(), guards=()):
     """(verdict, used_sampling): verdict is None when the entry
     agrees. Exact tier first, sample-point arbitration second; sample
@@ -271,6 +391,8 @@ def _entry_equal(t, s, entry, samples, assume=(), guards=()):
     guards -- a per-path formula is only claimed on its path (a
     chebyshev trace that picked element 2 as the max must not be
     sampled where element 0 wins)."""
+    t = _apply_assumptions(t, assume)
+    s = _apply_assumptions(s, assume)
     if _zero_within_budget(t - s):
         return None, False
     rng = np.random.default_rng(0)
