@@ -6,10 +6,9 @@ the two symbolically, entry by entry. The spec must not be derived
 from the trace itself: checking the code against its own output would
 always pass.
 
-Minimal scaffold: scalar and entrywise equality specs, the four-tier
-verdict, the pytest decorator. Piecewise seams, property rungs beyond
-a bare callable, assume-driven normalization and coverage proofs land
-on top of this skeleton.
+The comparison covers scalar and entrywise equality specs, Piecewise
+branches and their seams, multi-axis results, assume-driven
+normalization, the verdict ladder, and the pytest decorator.
 """
 
 from dataclasses import dataclass, field
@@ -384,6 +383,92 @@ def _apply_assumptions(expr, assume):
         expr = new
     return expr
 
+
+def _piecewise_branches(expr):
+    """Return Piecewise formulas with their effective, ordered domains."""
+    covered = sympy.false
+    branches = []
+    for formula, condition in expr.args:
+        effective = sympy.And(condition, sympy.Not(covered))
+        effective = sympy.simplify_logic(effective)
+        branches.append((formula, effective))
+        covered = sympy.Or(covered, condition)
+    return branches
+
+
+def _same_condition(left, right):
+    """Whether two branch domains are logically equivalent."""
+    if left == right:
+        return True
+    try:
+        return sympy.simplify_logic(sympy.Xor(left, right)) is sympy.false
+    except (TypeError, ValueError, NotImplementedError):
+        return False
+
+
+def _piecewise_equal(t, s, entry, samples, assume, guards):
+    """Compare formulas and switch domains for two Piecewise expressions."""
+    if not isinstance(t, sympy.Piecewise) or not isinstance(s, sympy.Piecewise):
+        spec_condition = s.args[0][1] if isinstance(s, sympy.Piecewise) else "<none>"
+        code_condition = t.args[0][1] if isinstance(t, sympy.Piecewise) else "<none>"
+        return Verdict(
+            tier="differs",
+            shape=(),
+            spec=s,
+            traced=t,
+            detail=(
+                f"entry {entry}: piecewise condition mismatch: "
+                f"spec uses {spec_condition}; code uses {code_condition}"
+            ),
+        ), False
+
+    traced_branches = _piecewise_branches(t)
+    spec_branches = _piecewise_branches(s)
+    if len(traced_branches) != len(spec_branches):
+        return Verdict(
+            tier="differs",
+            shape=(),
+            spec=s,
+            traced=t,
+            detail=(
+                f"entry {entry}: piecewise branch-count mismatch: "
+                f"spec has {len(spec_branches)}; code has {len(traced_branches)}"
+            ),
+        ), False
+
+    sampled = False
+    for (traced_formula, traced_condition), (
+        spec_formula,
+        spec_condition,
+    ) in zip(traced_branches, spec_branches, strict=True):
+        if not _same_condition(traced_condition, spec_condition):
+            return Verdict(
+                tier="differs",
+                shape=(),
+                spec=s,
+                traced=t,
+                detail=(
+                    f"entry {entry}: piecewise condition mismatch: "
+                    f"spec uses {spec_condition}; code uses {traced_condition}"
+                ),
+            ), sampled
+        branch_assume = list(assume)
+        if spec_condition is not sympy.true:
+            branch_assume.append(spec_condition)
+        verdict, used_sampling = _entry_equal(
+            traced_formula,
+            spec_formula,
+            entry,
+            samples,
+            branch_assume,
+            guards,
+        )
+        sampled = sampled or used_sampling
+        if verdict is not None:
+            return verdict, sampled
+    return None, sampled
+
+
 def _entry_equal(t, s, entry, samples, assume=(), guards=()):
     """(verdict, used_sampling): verdict is None when the entry
     agrees. Exact tier first, sample-point arbitration second; sample
@@ -393,6 +478,15 @@ def _entry_equal(t, s, entry, samples, assume=(), guards=()):
     sampled where element 0 wins)."""
     t = _apply_assumptions(t, assume)
     s = _apply_assumptions(s, assume)
+    if isinstance(s, sympy.Basic) and s.has(sympy.Piecewise):
+        s = sympy.piecewise_fold(s)
+    # A Piecewise SPEC opts into seam checking. A traced Piecewise against a
+    # non-piecewise spec keeps the historical whole-expression comparison:
+    # assumptions may legitimately collapse the traced branches.
+    if isinstance(s, sympy.Piecewise):
+        if isinstance(t, sympy.Basic) and t.has(sympy.Piecewise):
+            t = sympy.piecewise_fold(t)
+        return _piecewise_equal(t, s, entry, samples, assume, guards)
     if _zero_within_budget(t - s):
         return None, False
     rng = np.random.default_rng(0)

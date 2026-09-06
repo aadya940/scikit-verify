@@ -84,6 +84,11 @@ computes that formula for every input of that shape, and a failing one
 prints both formulas with a concrete counterexample. Specs come from
 the paper or the docstring, never from the trace itself.
 
+For array results, `indices=(i, j)` binds symbols to output axes in that
+order. Piecewise specs are checked branch by branch: both each branch's
+formula and the condition where the formula switches must match the traced
+code, so a boundary such as `x > 0` cannot silently pass as `x >= 0`.
+
 ## Installation
 
 ```bash
