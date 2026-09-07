@@ -185,3 +185,13 @@ class TestSharpEdges:
         r = explore(h, (np.array([1.0, 2.0]), 0.1))
         assert len(r.paths) == 2
         assert r.complete
+
+    def test_equality_branch_solved_not_sampled(self):
+        # sinc's removable singularity: the x == 0 branch is a
+        # measure-zero region reachable only by SOLVING the equality
+        def sincish(a0):
+            return np.sinc(a0)
+
+        r = explore(sincish, (np.array([0.7, -1.2, 2.5]),))
+        assert r.complete
+        assert len(r.paths) == 8  # every zero/nonzero combination
