@@ -52,7 +52,7 @@ print(out.pretty())
 # assumes[2] = a[3] <= a[0]
 ```
 
-The contract is exact-or-refuse. If an operation has no faithful
+The contract raises an exception when it can't work something out. If an operation has no faithful
 symbolic form, scikit-verify raises instead of guessing:
 
 ```python
@@ -79,10 +79,20 @@ def test_simpson_is_the_textbook_rule():
     return (lambda v: simpson(v)), (np.array([0.7, 1.2, 2.5, 0.3, 0.4]),)
 ```
 
-The comparison is symbolic, not sampled: a passing test means the code
+The comparison is symbolic, a passing test means the code
 computes that formula for every input of that shape, and a failing one
 prints both formulas with a concrete counterexample. Specs come from
-the paper or the docstring, never from the trace itself.
+the paper or the docstring, never from the trace itself. 
+
+`scikit-verify` now also has an `explore` flag, which uses ideas of concolic testing
+to maximize code coverage using the `Z3` Theorem Solver. Passing tests with `explore=` implies
+the code is valid against the mathematical formula across all reachable input paths.
+
+In a nutshell, correctness of numerical programs is two questions:
+1. Is the math itself correct?
+2. Is the code numerically stable?
+
+scikit-verify mostly answers the first question!
 
 ## Installation
 
