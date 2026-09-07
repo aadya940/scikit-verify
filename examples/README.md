@@ -12,6 +12,14 @@ implementation is traced, its entries come back as formulas in the
 knots, and the identity with the defining integral is proved for every
 knot vector of that shape at once.
 
+**[branch_coverage_check.ipynb](branch_coverage_check.ipynb)** shows
+the blind spot every test suite has and the fix: a spec that is right
+on the branch your input took and wrong on the other one. The
+explorer negates the branch conditions, asks Z3 for inputs on the
+other side, and either visits every branch or proves the leftovers
+unreachable. Ends with np.sinc's eight zero-pattern paths, found by
+solving equalities no random input ever hits.
+
 **[sklearn_bug_hunting.ipynb](sklearn_bug_hunting.ipynb)** traces
 BayesianRidge's uncertainty on sklearn 1.8 and 1.9: the bug the 1.9
 release fixed appears as the difference between two formulas.

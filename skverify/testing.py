@@ -454,8 +454,16 @@ def _entry_equal(t, s, entry, samples, assume=(), guards=()):
         },
         key=str,
     )
+    labels = {
+        e.base.label
+        for x in (td, sd)
+        for e in x.atoms(sympy.Indexed)
+    }
     syms = sorted(
-        (td - sd).free_symbols - set(sympy.symbols("i j k l m")), key=str
+        (td - sd).free_symbols
+        - set(sympy.symbols("i j k l m"))
+        - labels,  # an Indexed's base label is not an assignable input
+        key=str,
     )
     agree = True
     point = {}
