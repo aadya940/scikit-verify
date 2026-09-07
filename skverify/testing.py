@@ -84,6 +84,13 @@ def check_formula(fn, args, spec, indices=(), assume=(), samples=3,
     samples : int, optional
         Exact rational sample points used when the symbolic
         difference does not vanish (the float-constant tier).
+    explore : bool, optional
+        Check the spec on EVERY reachable branch, not just the one
+        ``args`` takes: branch guards are negated and solved for
+        inputs on the other side (see :func:`skverify.explore.explore`).
+        The verdict then reports coverage: "coverage proven" when
+        every unvisited region was proven infeasible, or an honest
+        qualifier when regions stay undecided.
 
     Returns
     -------

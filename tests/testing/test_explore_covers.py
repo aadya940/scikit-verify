@@ -132,3 +132,56 @@ class TestCheckEverywhere:
         )
         assert v.matches
         assert "coverage proven" in v.detail
+
+
+class TestSharpEdges:
+    def test_path_cap_never_claims_completeness(self):
+        # 2^5 = 32 sign branches, cap at 4: must say capped, not proven
+        def many(v):
+            out = 0.0
+            for k in range(5):
+                if v[k] > 0:
+                    out = out + v[k]
+                else:
+                    out = out - v[k]
+            return out
+
+        r = explore(many, (np.array([1.0, -1.0, 1.0, -1.0, 1.0]),),
+                    max_paths=4)
+        assert r.capped
+        assert not r.complete
+        assert "path cap" in r.summary()
+
+    def test_far_domain_guard_is_reachable(self):
+        # v[0] > 100 lives outside the default sampling window; the
+        # escalating range must still find a witness
+        def far(v):
+            if v[0] > 100.0:
+                return v * 2.0
+            return v
+
+        r = explore(far, (np.array([1.0, 2.0]),))
+        assert len(r.paths) == 2
+        assert r.complete
+
+    def test_two_array_args_rebuilt_by_name(self):
+        # the branch guard is on the SECOND argument; a positional
+        # rebuild would write the witness into the first
+        def g(u, w):
+            if w[0] > 0:
+                return u + w
+            return u - w
+
+        r = explore(g, (np.array([1.0, 2.0]), np.array([1.0, 2.0])))
+        assert len(r.paths) == 2
+        assert r.complete
+
+    def test_scalar_argument_witnessed(self):
+        def h(v, alpha):
+            if alpha > 0.5:
+                return v * alpha
+            return v
+
+        r = explore(h, (np.array([1.0, 2.0]), 0.1))
+        assert len(r.paths) == 2
+        assert r.complete

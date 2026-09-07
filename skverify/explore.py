@@ -40,13 +40,20 @@ class Exploration:
     infeasible: list = field(default_factory=list)  # refuted regions
     undecided: list = field(default_factory=list)   # neither witnessed nor refuted
     refusals: list = field(default_factory=list)    # paths the tracer refused
+    capped: bool = False  # stopped at max_paths with work remaining
 
     @property
     def complete(self):
         """True when the visited paths provably cover every input of
-        this shape: no undecided regions, no refused paths, and every
-        other region refuted."""
-        return not self.undecided and not self.refusals and bool(self.paths)
+        this shape: no undecided regions, no refused paths, nothing
+        left unexplored at the path cap, and every other region
+        refuted."""
+        return (
+            not self.undecided
+            and not self.refusals
+            and not self.capped
+            and bool(self.paths)
+        )
 
     def summary(self):
         parts = [f"{len(self.paths)} path(s) explored"]
@@ -56,6 +63,8 @@ class Exploration:
             parts.append(f"{len(self.undecided)} region(s) UNDECIDED")
         if self.refusals:
             parts.append(f"{len(self.refusals)} path(s) refused by the tracer")
+        if self.capped:
+            parts.append("stopped at the path cap with work remaining")
         head = ", ".join(parts)
         return head + (" -- coverage proven" if self.complete else
                        " -- coverage NOT proven")
@@ -124,13 +133,16 @@ def _witness(target, rng):
     eqs = [a for a in target if isinstance(a, sympy.Eq)]
     rest = [a for a in target if not isinstance(a, sympy.Eq)]
     slots, syms = _slots_of(target)
-    for _ in range(MAX_TRIES):
+    for trial in range(MAX_TRIES):
+        # escalate the range every quarter of the budget: a guard like
+        # v[0] > 100 lives far outside the default window
+        span = 400 * 10 ** (4 * trial // MAX_TRIES)
         subs = {
-            e: sympy.Rational(int(rng.integers(-400, 400)), 100)
+            e: sympy.Rational(int(rng.integers(-span, span)), 100)
             for e in slots
         }
         subs.update({
-            s: sympy.Rational(int(rng.integers(-400, 400)), 100)
+            s: sympy.Rational(int(rng.integers(-span, span)), 100)
             for s in syms
         })
         ok = True
@@ -187,42 +199,42 @@ def _refuted(target):
         return False
 
 
-def _rebuild_args(base_args, subs):
+def _param_names(fn, n):
+    """Positional parameter names, the same way the tracer names
+    wrapped arguments; falls back to arg0.. when introspection
+    fails (builtins, some callables)."""
+    import inspect
+
+    try:
+        params = list(inspect.signature(fn).parameters)
+        if len(params) >= n:
+            return params[:n]
+    except (TypeError, ValueError):
+        pass
+    return [f"arg{k}" for k in range(n)]
+
+
+def _rebuild_args(fn, base_args, subs):
     """Concrete arguments realizing a witness: copies of the originals
-    with every assigned slot written in."""
+    with every assigned slot written in, matched to parameters BY NAME
+    (guard bases are named after the function's parameters)."""
     out = [np.array(a, dtype=float, copy=True) if isinstance(a, np.ndarray)
            else a for a in base_args]
-    names = {}
-    for k, a in enumerate(out):
-        # positional parameter names were used to wrap: recover by order
-        names[k] = a
-    by_name = {}
+    names = _param_names(fn, len(out))
+    position = {name: k for k, name in enumerate(names)}
     for e, val in subs.items():
         if isinstance(e, sympy.Indexed):
-            by_name.setdefault(str(e.base.label), []).append(
-                (tuple(int(ix) for ix in e.indices), float(val))
-            )
-    # match array args to bases by shape-compatible writes, in order
-    import inspect as _unused  # names come from the trace wrap order
-    bases = list(by_name)
-    ai = 0
-    for base in bases:
-        while ai < len(out) and not isinstance(out[ai], np.ndarray):
-            ai += 1
-        if ai >= len(out):
-            break
-        for idx, val in by_name[base]:
-            try:
-                out[ai][idx] = val
-            except Exception:
-                pass
-        ai += 1
-    for e, val in subs.items():
-        if isinstance(e, sympy.Symbol):
-            for k, a in enumerate(out):
-                if not isinstance(a, np.ndarray):
-                    out[k] = float(val)
-                    break
+            k = position.get(str(e.base.label))
+            if k is not None and isinstance(out[k], np.ndarray):
+                idx = tuple(int(ix) for ix in e.indices)
+                try:
+                    out[k][idx] = float(val)
+                except (IndexError, ValueError):
+                    pass
+        elif isinstance(e, sympy.Symbol):
+            k = position.get(e.name)
+            if k is not None and not isinstance(out[k], np.ndarray):
+                out[k] = float(val)
     return tuple(out)
 
 
@@ -237,7 +249,10 @@ def explore(fn, args, max_paths=MAX_PATHS, seed=0):
     result = Exploration()
     seen = set()
     worklist = [tuple(args)]
-    while worklist and len(result.paths) < max_paths:
+    while worklist:
+        if len(result.paths) >= max_paths:
+            result.capped = True
+            break
         cur = worklist.pop()
         try:
             out = to_sympy(fn, *[
@@ -260,7 +275,7 @@ def explore(fn, args, max_paths=MAX_PATHS, seed=0):
                 continue
             wit = _witness(target, rng)
             if wit is not None:
-                worklist.append(_rebuild_args(cur, wit))
+                worklist.append(_rebuild_args(fn, cur, wit))
             elif _refuted(target):
                 result.infeasible.append(sympy.And(*target))
                 seen.add(tsig)
