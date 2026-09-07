@@ -125,13 +125,38 @@ def _unrolled(target):
     return out
 
 
+def _forced_ties(atoms):
+    """Pairs bounded from both sides are equalities in disguise:
+    a >= b together with a <= b is a tie region, which rejection
+    sampling hits with probability zero. Detect them so the draw can
+    assign the pair EQUAL constructively (sort and median tie paths,
+    variance-zero branches)."""
+    seen = {}
+    ties = []
+    for a in atoms:
+        if not isinstance(a, (sympy.Le, sympy.Ge)):
+            continue
+        lo, hi = (a.lhs, a.rhs) if isinstance(a, sympy.Le) else (a.rhs, a.lhs)
+        key = tuple(sorted((lo, hi), key=sympy.default_sort_key))
+        direction = "le" if (lo, hi) == key else "ge"
+        prev = seen.get(key)
+        if prev is not None and prev != direction:
+            ties.append(key)
+        seen[key] = direction
+    return ties
+
+
 def _witness(target, rng):
     """An exact rational assignment satisfying every atom in target,
     or None. Equalities assign constructively (Eq(a, b) forces the
-    slots equal); inequalities go by rejection sampling."""
+    slots equal, opposite inequalities force ties); plain inequalities
+    go by rejection sampling. The last quarter of the budget draws
+    ALL-EQUAL per array (one value for every slot of a base): the
+    constructive route into variance-zero and all-tied regions."""
     target = _unrolled(target)
     eqs = [a for a in target if isinstance(a, sympy.Eq)]
     rest = [a for a in target if not isinstance(a, sympy.Eq)]
+    ties = _forced_ties(rest)
     slots, syms = _slots_of(target)
     for trial in range(MAX_TRIES):
         # escalate the range every quarter of the budget: a guard like
@@ -145,6 +170,21 @@ def _witness(target, rng):
             s: sympy.Rational(int(rng.integers(-span, span)), 100)
             for s in syms
         })
+        if trial > 3 * MAX_TRIES // 4 and slots:
+            # all-equal mode: one value per array base
+            per_base = {}
+            for e in slots:
+                base = str(e.base.label)
+                if base not in per_base:
+                    per_base[base] = subs[e]
+                subs[e] = per_base[base]
+        for x, y in ties:
+            if x in subs and y in subs:
+                subs[x] = subs[y]
+            elif x in subs and not (
+                isinstance(y, sympy.Basic) and y.free_symbols
+            ):
+                subs[x] = sympy.nsimplify(y)
         ok = True
         for eq in eqs:
             l, r = eq.lhs, eq.rhs
