@@ -1831,3 +1831,56 @@ FUNCTION_TABLE[np.where] = _where
 FUNCTION_TABLE[np.transpose] = lambda a, axes=None: (
     a.transpose(axes) if isinstance(a, Pair) else np.transpose(a, axes)
 )
+
+
+def _dft_entry(a, name, sign, scale_by_n, out_len_fn, value_fn):
+    """Shared constructor for the FFT family: the discrete Fourier
+    transform IS a closed form at any n,
+
+        X[k] = Sum(a[j] * exp(sign * 2*pi*I*j*k/n), (j, 0, n-1))
+
+    so these are dialect entries, not sealed atoms. Any-n by
+    construction: one Sum, no size cases."""
+    if not isinstance(a, Pair):
+        return value_fn(a)
+    bounds = a._axis_bounds
+    if bounds is None or len(bounds) != 1:
+        raise NotImplementedError(f"{name}: 1-D input only")
+    lo, hi = bounds[0]
+    n = hi - lo
+    value = value_fn(Pair._value_of(a.value))
+    k = axis_idx(0)
+    j = _fresh_dummy(a.formula, 1)
+    body = a.formula.xreplace({k: j}) * sympy.exp(
+        sympy.Integer(sign) * 2 * sympy.pi * sympy.I * j * k
+        / sympy.Integer(n)
+    )
+    formula = _held_sum(body, (j, 0, n - 1))
+    if scale_by_n:
+        formula = formula / sympy.Integer(n)
+    out_n = out_len_fn(n)
+    return Pair(value, formula, ((0, out_n),), steps=(a,))
+
+
+def _fft(a, n=None, axis=-1, norm=None):
+    if n is not None or axis not in (-1, 0) or norm not in (None, "backward"):
+        raise NotImplementedError("fft: n/axis/norm variants not supported")
+    return _dft_entry(a, "fft", -1, False, lambda m: m, np.fft.fft)
+
+
+def _ifft(a, n=None, axis=-1, norm=None):
+    if n is not None or axis not in (-1, 0) or norm not in (None, "backward"):
+        raise NotImplementedError("ifft: n/axis/norm variants not supported")
+    return _dft_entry(a, "ifft", 1, True, lambda m: m, np.fft.ifft)
+
+
+def _rfft(a, n=None, axis=-1, norm=None):
+    if n is not None or axis not in (-1, 0) or norm not in (None, "backward"):
+        raise NotImplementedError("rfft: n/axis/norm variants not supported")
+    # same sum; numpy returns only the first n//2 + 1 entries
+    return _dft_entry(a, "rfft", -1, False, lambda m: m // 2 + 1, np.fft.rfft)
+
+
+FUNCTION_TABLE[np.fft.fft] = _fft
+FUNCTION_TABLE[np.fft.ifft] = _ifft
+FUNCTION_TABLE[np.fft.rfft] = _rfft
