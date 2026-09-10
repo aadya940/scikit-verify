@@ -15,3 +15,4 @@ examples/how_skverify_helps.ipynb
 examples/knot_debugging.ipynb
 examples/banded_inverse_lift.ipynb
 examples/.shipped_section_post_merge.ipynb
+.vscode/
