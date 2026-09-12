@@ -871,10 +871,8 @@ FUNCTION_TABLE[np.gradient] = _gradient
 
 def _space_axis_formula(formula, bounds, axis):
     """Insert a sample axis without capturing a reduction dummy."""
-    if bounds is None:
-        return formula
-    targets = {
-        axis_idx(old_axis + (old_axis >= axis)) for old_axis in range(len(bounds))
+    targets = {axis_idx(axis)} | {
+        axis_idx(old_axis + (old_axis >= axis)) for old_axis in range(len(bounds or ()))
     }
     taken = {symbol.name for symbol in formula.atoms(sympy.Symbol)}
     alpha = {}
@@ -891,7 +889,7 @@ def _space_axis_formula(formula, bounds, axis):
     if alpha:
         formula = formula.xreplace(alpha)
     temporaries = {
-        axis_idx(old_axis): sympy.Dummy(integer=True) for old_axis in range(len(bounds))
+        axis_idx(old_axis): sympy.Dummy(integer=True) for old_axis in range(len(bounds or ()))
     }
     moved = {
         temporary: axis_idx(old_axis + (old_axis >= axis))
