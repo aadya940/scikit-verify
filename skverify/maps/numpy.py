@@ -868,10 +868,38 @@ def _gradient(f, *varargs, axis=None, edge_order=1):
 FUNCTION_TABLE[np.gradient] = _gradient
 
 
-def _linspace(start, stop, num=50, endpoint=True, retstep=False, **kwargs):
+def _space_axis_formula(formula, bounds, axis):
+    """Insert a sample axis without capturing a reduction dummy."""
+    targets = {axis_idx(axis)} | {
+        axis_idx(old_axis + (old_axis >= axis)) for old_axis in range(len(bounds or ()))
+    }
+    taken = {symbol.name for symbol in formula.atoms(sympy.Symbol)}
+    alpha = {}
+    for inner in formula.atoms(sympy.Sum, sympy.Product):
+        for limit in inner.limits:
+            dummy = limit[0]
+            if dummy in targets and dummy not in alpha:
+                suffix = 2
+                while f"{dummy.name}{suffix}" in taken:
+                    suffix += 1
+                fresh = sympy.Symbol(f"{dummy.name}{suffix}", integer=True)
+                taken.add(fresh.name)
+                alpha[dummy] = fresh
+    if alpha:
+        formula = formula.xreplace(alpha)
+    temporaries = {
+        axis_idx(old_axis): sympy.Dummy(integer=True) for old_axis in range(len(bounds or ()))
+    }
+    moved = {
+        temporary: axis_idx(old_axis + (old_axis >= axis))
+        for old_axis, temporary in enumerate(temporaries.values())
+    }
+    return formula.xreplace(temporaries).xreplace(moved)
+
+
+def _space_parts(name, start, stop, num, endpoint, retstep, kwargs, value_fn):
     if not (isinstance(start, Pair) or isinstance(stop, Pair)):
-        # nothing traced: numpy's own linspace, untouched
-        return np.linspace(
+        return None, value_fn(
             Pair._value_of(start),
             Pair._value_of(stop),
             int(num),
@@ -879,31 +907,121 @@ def _linspace(start, stop, num=50, endpoint=True, retstep=False, **kwargs):
             retstep=retstep,
             **kwargs,
         )
-    kwargs = {
-        k: v
-        for k, v in kwargs.items()
-        if not (v is None or (k == "axis" and v == 0))
-    }
+    axis = int(kwargs.pop("axis", 0))
+    kwargs = {key: value for key, value in kwargs.items() if value is not None}
     if kwargs or retstep:
-        raise NotImplementedError("linspace: retstep/kwargs not supported")
-    if np.size(Pair._value_of(start)) != 1 or np.size(Pair._value_of(stop)) != 1:
-        raise NotImplementedError("linspace: scalar endpoints only")
+        raise NotImplementedError(f"{name}: retstep/kwargs not supported")
     num = int(num)
-    lo, hi = Pair._formula_of(start), Pair._formula_of(stop)
-    n_steps = (num - 1) if endpoint else num
-    i = axis_idx(0)
-    formula = lo + i * (hi - lo) / sympy.Integer(max(n_steps, 1))
-    value = np.linspace(
-        float(np.asarray(Pair._value_of(start)).ravel()[0]),
-        float(np.asarray(Pair._value_of(stop)).ravel()[0]),
+    value = value_fn(
+        Pair._value_of(start),
+        Pair._value_of(stop),
         num,
         endpoint=endpoint,
+        axis=axis,
     )
-    steps = tuple(p for p in (start, stop) if isinstance(p, Pair))
-    return Pair(value, formula, ((0, num),), steps=steps)
+    if value.ndim > 5:
+        raise NotImplementedError("arrays beyond 5D are not supported.")
+    axis %= value.ndim
+    lo, hi, bounds = Pair._broadcast(start, stop)
+    lo = _space_axis_formula(lo, bounds, axis)
+    hi = _space_axis_formula(hi, bounds, axis)
+    sample = axis_idx(axis)
+    n_steps = (num - 1) if endpoint else num
+    fraction = sample / sympy.Integer(max(n_steps, 1))
+    domain = tuple((0, size) for size in value.shape)
+    steps = tuple(pair for pair in (start, stop) if isinstance(pair, Pair))
+    return (lo, hi, fraction, domain, steps), value
+
+
+def _linspace(start, stop, num=50, endpoint=True, retstep=False, **kwargs):
+    parts, value = _space_parts(
+        "linspace", start, stop, num, endpoint, retstep, kwargs, np.linspace
+    )
+    if parts is None:
+        return value
+    lo, hi, fraction, domain, steps = parts
+    formula = lo + fraction * (hi - lo)
+    return Pair(value, formula, domain, steps=steps)
 
 
 FUNCTION_TABLE[np.linspace] = _linspace
+
+
+def _logspace(start, stop, num=50, endpoint=True, base=10.0, dtype=None, axis=0):
+    if not (isinstance(start, Pair) or isinstance(stop, Pair)):
+        return np.logspace(
+            Pair._value_of(start),
+            Pair._value_of(stop),
+            int(num),
+            endpoint=endpoint,
+            base=base,
+            dtype=dtype,
+            axis=axis,
+        )
+    if isinstance(base, Pair) or np.size(base) != 1 or np.iscomplexobj(base):
+        raise NotImplementedError("logspace: scalar real base only")
+    base = float(np.asarray(base).ravel()[0])
+    if base <= 0:
+        raise NotImplementedError("logspace: positive base only")
+    parts, value = _space_parts(
+        "logspace",
+        start,
+        stop,
+        num,
+        endpoint,
+        False,
+        {"axis": axis, "dtype": dtype},
+        lambda lo, hi, count, **opts: np.logspace(lo, hi, count, base=base, **opts),
+    )
+    if parts is None:
+        return value
+    lo, hi, fraction, domain, steps = parts
+    formula = sympy.Float(base) ** (lo + fraction * (hi - lo))
+    return Pair(value, formula, domain, steps=steps)
+
+
+FUNCTION_TABLE[np.logspace] = _logspace
+
+
+def _geomspace(start, stop, num=50, endpoint=True, dtype=None, axis=0):
+    if not (isinstance(start, Pair) or isinstance(stop, Pair)):
+        return np.geomspace(
+            Pair._value_of(start),
+            Pair._value_of(stop),
+            int(num),
+            endpoint=endpoint,
+            dtype=dtype,
+            axis=axis,
+        )
+    lo_value = np.asarray(Pair._value_of(start))
+    hi_value = np.asarray(Pair._value_of(stop))
+    if np.iscomplexobj(lo_value) or np.iscomplexobj(hi_value):
+        raise NotImplementedError("geomspace: real endpoints only")
+    lo_value, hi_value = np.broadcast_arrays(lo_value, hi_value)
+    if np.any(lo_value == 0) or np.any(hi_value == 0):
+        raise ValueError("Geometric sequence cannot include zero")
+    if np.any(np.signbit(lo_value) != np.signbit(hi_value)):
+        raise NotImplementedError("geomspace: endpoints must have matching signs")
+    parts, value = _space_parts(
+        "geomspace",
+        start,
+        stop,
+        num,
+        endpoint,
+        False,
+        {"axis": axis, "dtype": dtype},
+        np.geomspace,
+    )
+    if parts is None:
+        return value
+    lo, hi, fraction, domain, steps = parts
+    formula = sympy.sign(lo) * sympy.exp(
+        (1 - fraction) * sympy.log(sympy.Abs(lo)) + fraction * sympy.log(sympy.Abs(hi))
+    )
+    return Pair(value, formula, domain, steps=steps)
+
+
+FUNCTION_TABLE[np.geomspace] = _geomspace
 
 
 def _ascontiguousarray(a, dtype=None, **kwargs):
