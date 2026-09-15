@@ -45,6 +45,7 @@ docs = [
     "sphinx>=7",
     "sphinx-rtd-theme>=2",
     "myst-parser>=3",
+    "sphinx_copybutton",
 ]
 dev = [
     "pytest>=8",
