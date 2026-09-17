@@ -827,20 +827,45 @@ def check_property(fn, args, prop, assume=(), explore=True, samples=3):
 
 
 def _property(prop, assume=(), explore=True):
-    """Assert a property of the traced certificate, no closed form
-    needed.
+    """Assert a fact about the traced certificate, as a pytest test.
 
-    Where :func:`specifies` checks *what* the code computes, this
-    checks a fact the paper proves about it -- the stronger rung when
-    nobody knows the entries.
+    Where :func:`specifies` checks *what* the code computes,
+    ``@specifies.property`` checks a fact the paper proves about it,
+    which is the rung to reach for when nobody knows the closed form
+    (entries sum to one, a matrix is symmetric, a null space holds).
+    The decorated test returns ``(fn, args)`` just like
+    :func:`specifies`; the fact is decided symbolically on every
+    reachable branch and the test fails with the input that breaks it.
 
     Parameters
     ----------
     prop : callable
-        Receives the traced formula, returns a sympy relation (or a
-        plain boolean). The relation must simplify to true.
+        Receives the traced formula and returns a sympy relation (or
+        a plain boolean). Equalities are checked by symbolic residual,
+        inequalities by entailment from the traced guards.
     assume : iterable of sympy relations, optional
-        Reserved for domain-restricted properties.
+        The fact's domain, e.g. ``[v[0] > 0]``. Constrains both
+        exploration and the sample points used for arbitration.
+    explore : bool, optional
+        True by default: the fact is checked on every reachable
+        branch, since a fact that holds on the traced path can fail
+        on another. Pass ``explore=False`` for the single-path check.
+
+    Examples
+    --------
+    The softmax output sums to one, on every branch::
+
+        import sympy
+        from scipy.special import softmax
+        from skverify.testing import specifies
+
+        @specifies.property(lambda F: sympy.Eq(sum(F[k] for k in range(3)), 1))
+        def test_softmax_normalizes():
+            return (lambda v: softmax(v)), (data,)
+
+    See Also
+    --------
+    check_property : the function form, which returns the Verdict.
 
     Examples
     --------
