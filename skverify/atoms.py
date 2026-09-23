@@ -333,7 +333,9 @@ def _opaque_call_impl(Pair, func, args, kwargs):
         for a in pair_args
         if isinstance(a.value, np.ndarray)
     ]
-    if snapshots != after:
+    if snapshots != after:  # pragma: no cover
+        # unreachable: the routine runs on copies, so the traced
+        # values are never mutated and snapshots always equal after
         raise NotImplementedError(
             f"{func.__name__} mutated a traced input in place"
         )

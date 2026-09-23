@@ -515,13 +515,15 @@ class Pair:
         sym_map = {}
         for old_sym, expr in index_map.items():
             expr = sympy.sympify(expr)
-            if not expr.free_symbols <= set(_AXIS_SYMBOLS):
+            if not expr.free_symbols <= set(_AXIS_SYMBOLS):  # pragma: no cover
+                # unreachable: all internal callers pass axis-symbol maps
                 raise NotImplementedError(
                     f"index map {old_sym} -> {expr} is not an index expression"
                 )
-            if not expr.is_integer and not all(
+            if not expr.is_integer and not all(  # pragma: no cover
                 expr.diff(s).is_Integer for s in expr.free_symbols
             ):
+                # unreachable: all internal callers pass affine maps
                 raise NotImplementedError(
                     f"index map {old_sym} -> {expr} is not affine"
                 )
@@ -1005,7 +1007,9 @@ class Pair:
         )
 
     def __radd__(self, other):
-        if Pair._defers(other):
+        if Pair._defers(other):  # pragma: no cover
+            # unreachable: numpy dispatches an object-array-of-Pairs
+            # element-wise before any reflected dunder is reached
             return NotImplemented  # handles  2 + u
         return self.__add__(other)
 
@@ -1021,7 +1025,8 @@ class Pair:
         )
 
     def __rsub__(self, other):
-        if Pair._defers(other):
+        if Pair._defers(other):  # pragma: no cover
+            # unreachable: object-array-of-Pairs dispatches element-wise
             return NotImplemented  # handles  2 - u   (order matters!)
         mine, theirs, merged = Pair._broadcast(self, other)
         return Pair(
@@ -1056,7 +1061,8 @@ class Pair:
         )
 
     def __rfloordiv__(self, other):
-        if Pair._defers(other):
+        if Pair._defers(other):  # pragma: no cover
+            # unreachable: object-array-of-Pairs dispatches element-wise
             return NotImplemented
         mine, theirs, merged = Pair._broadcast(self, other)
         return Pair(
@@ -1158,7 +1164,8 @@ class Pair:
         )
 
     def __rmod__(self, other):
-        if Pair._defers(other):
+        if Pair._defers(other):  # pragma: no cover
+            # unreachable: object-array-of-Pairs dispatches element-wise
             return NotImplemented
         mine, theirs, merged = Pair._broadcast(self, other)
         return Pair(
@@ -1173,7 +1180,9 @@ class Pair:
 
         return _matmul(self, other)
 
-    def __rmatmul__(self, other):
+    def __rmatmul__(self, other):  # pragma: no cover
+        # unreachable: plain @ Pair routes through the np.matmul ufunc
+        # path, not this reflected dunder
         from .maps.numpy import _matmul
 
         return _matmul(other, self)
@@ -1624,7 +1633,8 @@ class Pair:
         )
 
     def __rtruediv__(self, other):
-        if Pair._defers(other):
+        if Pair._defers(other):  # pragma: no cover
+            # unreachable: object-array-of-Pairs dispatches element-wise
             return NotImplemented  # other / self
         mine, theirs, merged = Pair._broadcast(self, other)
         return Pair(
@@ -1646,7 +1656,8 @@ class Pair:
         )
 
     def __rpow__(self, other):
-        if Pair._defers(other):
+        if Pair._defers(other):  # pragma: no cover
+            # unreachable: object-array-of-Pairs dispatches element-wise
             return NotImplemented  # other ** self
         mine, theirs, merged = Pair._broadcast(self, other)
         return Pair(
@@ -2101,7 +2112,9 @@ class Pair:
                     from .maps.numpy import _frexp
 
                     return _frexp(*inputs)
-                raise NotImplementedError(
+                raise NotImplementedError(  # pragma: no cover
+                    # unreachable: numpy exposes no nout>1 ufunc other
+                    # than modf/divmod/frexp handled above
                     f"ufunc {ufunc.__name__} has {ufunc.nout} outputs"
                 )
             return Pair._opaque_call(ufunc, inputs, kwargs)
