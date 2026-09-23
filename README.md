@@ -92,17 +92,27 @@ proves no such inputs exist. A green test cannot hide an unchecked
 branch.
 
 ```python
-def f(v):
+from skverify.testing import check_formula
+
+v = sympy.IndexedBase("v")
+i = sympy.Idx("i")
+
+# meant to apply a gain of 2 to every element
+def apply_gain(v):
     if v.sum() > 0:
         return v * 2.0
-    return v * 3.0
+    return v * 3.0          # wrong gain on this branch
 
-check_formula(f, (np.array([1.0, 2.0]),), 2 * v[i], indices=(i,), explore=True)
+check_formula(apply_gain, (np.array([1.0, 2.0]),), 2 * v[i], indices=(i,), explore=True)
 # verdict: differs
 #   your spec:  2*v[0]
 #   the code:   3.0*v[0]
 #   on the path where: Sum(v[j], (j, 0, 1)) <= 0
 ```
+
+The test input `[1.0, 2.0]` has a positive sum, so it only ever takes
+the correct branch. `explore=True` sends Z3 after the path the data
+never reached, and there the gain is wrong.
 
 When nobody knows the closed form, state a fact about it instead.
 The entries sum to one, the matrix is symmetric, a null space holds:

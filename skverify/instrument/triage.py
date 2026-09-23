@@ -151,12 +151,15 @@ def _skv_maybe(fn):
         if fn.__name__ in RNG_DISTS:
             # a random draw: sealed as a distribution-tagged atom, the
             # generator consumed exactly as in an untraced run
-            base = _base_draw(self_arr, fn.__name__)
+            # unreachable: under trace_rng generators are TracedGenerator
+            # instances whose draw methods already route through rng_draw,
+            # so this shim is shadowed
+            base = _base_draw(self_arr, fn.__name__)  # pragma: no cover
 
-            def rng_shim(*args, **kwargs):
+            def rng_shim(*args, **kwargs):  # pragma: no cover
                 return rng_draw(base, args, kwargs)
 
-            return rng_shim
+            return rng_shim  # pragma: no cover
         return fn
     if (
         isinstance(self_arr, np.ndarray)

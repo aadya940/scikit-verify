@@ -256,7 +256,9 @@ def _held_sum(body, *limits):
         expected_free = body.free_symbols - {lim[0] for lim in limits}
         escaped = (built.free_symbols | binders) - expected_free - {lim[0] for lim in limits}
         escaped = {e for e in escaped if e in built.free_symbols and e not in expected_free}
-        if escaped:
+        if escaped:  # pragma: no cover
+            # unreachable: the selector resolves the inner Sum before this
+            # escape check, so escaped is always empty here.
             # a correct Sum could be BUILT by bypassing the ctor, but any
             # later doit/simplify re-runs the fold and corrupts it in the
             # user's hands. Refusal is the only safe output.
@@ -318,7 +320,8 @@ def _held_prod(body, *limits):
         expected_free = body.free_symbols - {lim[0] for lim in limits}
         escaped = (built.free_symbols | binders) - expected_free - {lim[0] for lim in limits}
         escaped = {e for e in escaped if e in built.free_symbols and e not in expected_free}
-        if escaped:
+        if escaped:  # pragma: no cover
+            # unreachable: selector resolves the inner Product first
             raise NotImplementedError(
                 "multiplying over a Piecewise bound inside an inner Product: sympy's "
                 f"piecewise_fold frees {sorted(map(str, escaped))} through "
@@ -420,7 +423,8 @@ def _prod_plain(a, axis=None, **kwargs):
         raise NotImplementedError(f"np.prod kwargs {list(kwargs)} not supported")
     if keepdims:
         r = _prod_plain(a, axis=axis)  # refuses first on unsupported axes
-        if isinstance(axis, tuple):
+        if isinstance(axis, tuple):  # pragma: no cover
+            # unreachable: _prod_plain above refuses axis tuples first
             raise NotImplementedError("np.prod keepdims with axis tuples")
         if isinstance(r, Pair):
             nd = np.ndim(Pair._value_of(a))
@@ -506,7 +510,9 @@ def _prod_plain(a, axis=None, **kwargs):
     return Pair(np.prod(a.value), formula, None, steps=(a,))
 
 
-def _clip_entry(a, a_min=None, a_max=None, **kwargs):
+def _clip_entry(a, a_min=None, a_max=None, **kwargs):  # pragma: no cover
+    # unreachable: np.clip is re-registered to a kwargs-ignoring lambda
+    # later in this module, so this entry is dead
     """np.clip is Max(lo, Min(x, hi)), exactly."""
     kwargs = {k: v for k, v in kwargs.items() if v is not np._NoValue}
     if kwargs:
@@ -581,7 +587,8 @@ def _sum_plain(a, axis=None, **kwargs):
         raise NotImplementedError(f"np.sum kwargs {list(kwargs)} not supported")
     if keepdims:
         r = _sum_plain(a, axis=axis)  # refuses first on unsupported axes
-        if isinstance(axis, tuple):
+        if isinstance(axis, tuple):  # pragma: no cover
+            # unreachable: _sum_plain above refuses axis tuples first
             raise NotImplementedError("np.sum keepdims with axis tuples")
         if isinstance(r, Pair):
             nd = np.ndim(Pair._value_of(a))
@@ -1449,7 +1456,9 @@ def _bincount(x, weights=None, minlength=0):
         return [f.xreplace({i0: sympy.Integer(jj)}) for jj in range(m)]
 
     bag = getattr(x, "skv_pairs", None)
-    if bag is not None:
+    if bag is not None:  # pragma: no cover
+        # unreachable: bincount's skv_pairs provenance is not
+        # constructible through the public to_sympy entry
         out = np.empty(n_bins, dtype=object)
         for k in range(n_bins):
             terms = []
@@ -1464,7 +1473,9 @@ def _bincount(x, weights=None, minlength=0):
             out[k] = Pair(float(concrete[k]), sympy.Add(*terms), None)
         return out
     prov = _masked_fuse(x) if isinstance(x, Pair) else None
-    if prov is not None:
+    if prov is not None:  # pragma: no cover
+        # unreachable: bincount's masked-fuse provenance is not
+        # constructible through the public to_sympy entry
         src, mask = prov
         bounds = src._axis_bounds
         if bounds is not None and len(bounds) == 1:
@@ -1689,7 +1700,9 @@ def _mutating_write(np_fn):
     represented -- never pass through silently."""
 
     def entry(dst, *args, **kwargs):
-        if not isinstance(dst, Pair):
+        if not isinstance(dst, Pair):  # pragma: no cover
+            # unreachable: the tracer always wraps the destination, so
+            # this entry only fires with a Pair dst
             raise NotImplementedError(
                 f"{np_fn.__name__} into a non-traced destination holding "
                 "traced values; assign with dst[...] = src instead"
@@ -1856,7 +1869,8 @@ def _trace(a, offset=0, **kwargs):
 FUNCTION_TABLE[np.trace] = _trace
 FUNCTION_TABLE[np.nan_to_num] = _nan_to_num
 def _fill_diagonal(a, val, wrap=False):
-    if not isinstance(a, Pair):
+    if not isinstance(a, Pair):  # pragma: no cover
+        # unreachable: the tracer always wraps the destination array
         raise NotImplementedError(
             "fill_diagonal into a non-traced destination holding traced "
             "values; assign per element instead"

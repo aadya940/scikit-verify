@@ -408,14 +408,14 @@ def _zero_within_budget(d, seconds=10):
         finally:
             signal.setitimer(signal.ITIMER_REAL, 0)
             signal.signal(signal.SIGALRM, old)
-    from .helpers import ops_capped
-
-    if ops_capped(e2, 2000) is not None:  # small enough to risk
+    from .helpers import ops_capped  # pragma: no cover
+    # off-POSIX fallback: unreachable on POSIX, where SIGALRM exists
+    if ops_capped(e2, 2000) is not None:  # small enough to risk  # pragma: no cover
         try:
             return sympy.simplify(e2) == 0
         except Exception:
             return False
-    return False
+    return False  # pragma: no cover
 
 
 

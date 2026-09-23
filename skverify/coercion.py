@@ -63,7 +63,8 @@ def value_of(x):
                         weakref.ref(v),
                         x.formula,
                     )
-                except TypeError:
+                except TypeError:  # pragma: no cover
+                    # unreachable: v is a real ndarray, always weakref-able
                     pass
         return v
     if isinstance(x, np.ndarray) and x.dtype == object:

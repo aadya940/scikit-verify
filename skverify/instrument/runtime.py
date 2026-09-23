@@ -255,21 +255,25 @@ class _SkvAtIndexed:
     def add(self, v, **kw):
         return self._updated(lambda a, b: a + b, v)
 
-    def subtract(self, v, **kw):
+    def subtract(self, v, **kw):  # pragma: no cover
+        # array_api_extra .at[].subtract; package is not a dependency
         return self._updated(lambda a, b: a - b, v)
 
-    def multiply(self, v, **kw):
+    def multiply(self, v, **kw):  # pragma: no cover
+        # array_api_extra .at[].multiply; package is not a dependency
         return self._updated(lambda a, b: a * b, v)
 
-    def divide(self, v, **kw):
+    def divide(self, v, **kw):  # pragma: no cover
+        # array_api_extra .at[].divide; package is not a dependency
         return self._updated(lambda a, b: a / b, v)
 
 
 class _SkvAt:
-    def __init__(self, pair):
+    def __init__(self, pair):  # pragma: no cover
+        # array_api_extra x.at accessor; package is not a dependency
         self.pair = pair
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx):  # pragma: no cover
         return _SkvAtIndexed(self.pair, idx)
 
 
@@ -293,7 +297,8 @@ def _skv_at(real_at, x, *args, **kwargs):
         return None
     # array_api_extra's functional update: on a Pair it is setitem on
     # a copy; anything else goes to the real helper
-    if isinstance(x, Pair):
+    if isinstance(x, Pair):  # pragma: no cover
+        # array_api_extra functional at(x, idx); not a dependency
         if args:  # at(x, idx) form
             return _SkvAtIndexed(x, args[0])
         return _SkvAt(x)

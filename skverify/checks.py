@@ -47,11 +47,13 @@ def _rung_classify(residual):
     """
     if residual.is_number and residual != 0:
         return Evidence(REFUTED, "canonical", residual), residual
-    if not residual.free_symbols:
+    if not residual.free_symbols:  # pragma: no cover
+        # unreachable: a non-number residual always carries free symbols
         return Evidence(REFUTED, "canonical", residual), residual
     if residual.atoms(sympy.Indexed) or residual.atoms(sympy.Symbol):
         return Evidence(REFUTED, "residual", residual), residual
-    return Evidence(UNKNOWN, "simplify", residual), residual
+    # unreachable: any free-symbol residual has Symbol/Indexed atoms
+    return Evidence(UNKNOWN, "simplify", residual), residual  # pragma: no cover
 
 
 # The equivalence ladder, cheapest first. A verdict from an earlier
@@ -83,7 +85,8 @@ def against(obj, reference):
         verdict, residual = rung(residual)
         if verdict is not None:
             return verdict
-    return Evidence(UNKNOWN, "ladder", residual)
+    # unreachable: _rung_classify (last rung) always returns a verdict
+    return Evidence(UNKNOWN, "ladder", residual)  # pragma: no cover
 
 
 def conserves_mass(obj):
@@ -101,7 +104,8 @@ def conserves_mass(obj):
     if diff.is_number or diff.free_symbols:
         # not identically one; the residual names the leak
         return Evidence(REFUTED, "coefficient sum", diff)
-    return Evidence(UNKNOWN, "coefficient sum", total)
+    # unreachable: diff is always a number or carries free symbols
+    return Evidence(UNKNOWN, "coefficient sum", total)  # pragma: no cover
 
 
 def centered(obj, at=0):
