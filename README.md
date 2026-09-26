@@ -18,7 +18,8 @@
 * [Coverage](doc/coverage.md)
 * [License](https://github.com/aadya940/scikit-verify/blob/master/LICENSE)
 * [skverify-mcp](skverify-mcp/) - MCP for mathematical feedback for coding agents
-* [Demo](examples/penalty_matrix_check.ipynb) - a 20-page SciPy derivation, checked
+* [Demo](examples/penalty_matrix_check.ipynb) - a 20-page SciPy derivation
+* [Blog](https://aadya940.neocities.org/)
 * [Branch coverage](examples/branch_coverage_check.ipynb) - Testing and maximizing code coverage using Z3
 
 scikit-verify is a tracer for numerical Python. It runs your NumPy
