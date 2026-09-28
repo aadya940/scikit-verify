@@ -1,13 +1,13 @@
-"""The wild-code sample: research functions drawn by a fixed rule.
+"""The wild-code sample of research functions drawn by a fixed rule.
 
-Sampling rule (fixed before looking): gh code search for np.gradient,
-np.cumsum, np.linalg.norm; first 12 hits each in search order; dedupe
-by repo; fetch each hit file. From each file, every module-level
+The sampling rule was fixed before looking. It runs a gh code search for
+np.gradient, np.cumsum, np.linalg.norm, takes the first 12 hits each in
+search order, dedupes by repo, and fetches each hit file. From each file, every module-level
 function that is self-contained (only numpy/math names, no decorators,
 positional args only) and callable on synthesized float arrays enters
-the menu. Nothing is skipped by hand; every exclusion is counted.
+the menu. Nothing is skipped by hand, and every exclusion is counted.
 
-Foreign sources stay under /tmp/wild (licenses); only the scoreboard
+Foreign sources stay under /tmp/wild (licenses). Only the scoreboard
 is recorded here.
 """
 import ast
@@ -114,7 +114,7 @@ for path in sorted(glob.glob("/tmp/wild/files/*")):
             exec(compile(seg, fname, "exec"), ns)
         except Exception:
             continue
-        # the instrumented retry reads source via inspect: register it
+        # the instrumented retry reads source via inspect, so register it
         # the same way notebook cells do
         import linecache
 

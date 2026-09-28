@@ -1,12 +1,12 @@
-"""Spec board: docstring formulas held to their implementations.
+"""The spec board holds docstring formulas to their implementations.
 
 Every spec below is transcribed from the function's OWN docstring (or
 the textbook identity the docstring names), never from the trace.
-The board measures the @specifies story end to end: how much shipped
-numerical Python can be held to the mathematics it documents, and at
-which verdict tier.
+The board measures the @specifies story end to end. It reports how much
+shipped numerical Python can be held to the mathematics it documents,
+and at which verdict tier.
 
-LOCAL ONLY until findings are adjudicated: a `differs` here is either
+LOCAL ONLY until findings are adjudicated. A `differs` here is either
 a transcription slip on our side or a real doc-vs-code divergence,
 and only a human read decides which.
 """
@@ -48,7 +48,7 @@ STD = sympy.sqrt(VAR)
 
 
 def S(expr_fn):
-    """Sum over a fresh dummy: S(lambda j: V[j]**2)."""
+    """Sum over a fresh dummy, as in S(lambda j: V[j]**2)."""
     jj = J()
     return sympy.Sum(expr_fn(jj), (jj, 0, N - 1))
 
@@ -115,7 +115,7 @@ entry("special.log_softmax", lambda v: sp.log_softmax(v), (MIX,),
 entry("special.expit", lambda v: sp.expit(v), (MIX,),
       1 / (1 + sympy.exp(-V[i])), (i,))
 
-# scipy.spatial.distance: docstrings all carry formulas ---------------
+# scipy.spatial.distance, docstrings all carry formulas ---------------
 import scipy.spatial.distance as sd
 
 entry("distance.euclidean", lambda u, w: sd.euclidean(u, w), (U3, W3),

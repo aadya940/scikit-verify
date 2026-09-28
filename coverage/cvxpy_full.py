@@ -1,4 +1,4 @@
-"""The cvxpy sweep: expression evaluation and small solved problems."""
+"""The cvxpy sweep. It covers expression evaluation and small solved problems."""
 import signal
 import warnings
 
@@ -27,7 +27,7 @@ def add(name, fn, *args):
 def val(expr):
     return expr.value
 
-# ---- atom evaluation: cvxpy expression on data, read the value
+# ---- atom evaluation. Evaluate the cvxpy expression on data and read the value
 add("sum_squares", lambda a: val(cp.sum_squares(a)), v)
 add("norm1", lambda a: val(cp.norm1(a)), v)
 add("norm2", lambda a: val(cp.norm2(a)), v)
@@ -62,7 +62,7 @@ add("log_det", lambda s: val(cp.log_det(s)), S)
 add("tv_1d", lambda a: val(cp.tv(a)), v)
 add("residual_norm", lambda a, c: val(cp.norm2(a @ np.ones(3) - c)), A, b)
 
-# ---- solved problems: data -> optimizer
+# ---- solved problems. Data feeds the optimizer
 def lstsq(a, c):
     x = cp.Variable(3)
     cp.Problem(cp.Minimize(cp.sum_squares(a @ x - c))).solve()

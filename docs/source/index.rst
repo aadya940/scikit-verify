@@ -19,6 +19,7 @@ Welcome to scikit-verify's documentation!
 
    README
    design
+   loop_domains
    api
    design_philosophy
    CONTRIBUTING

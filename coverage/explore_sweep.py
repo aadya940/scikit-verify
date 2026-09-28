@@ -1,9 +1,9 @@
 """Exploration sweep over the FULL lifted numpy surface.
 
-Reuses the dialect board's machinery: walk every public callable in
-np, np.linalg and np.fft, synthesize a call that lifts, then run
-explore() on it. Tally: coverage proven / undecided / capped /
-refused / timed out. The honest denominator is "functions that lift
+Reuses the dialect board's machinery. It walks every public callable in
+np, np.linalg and np.fft, synthesizes a call that lifts, then runs
+explore() on it. It tallies coverage proven, undecided, capped,
+refused, and timed out. The honest denominator is "functions that lift
 with the synthesized recipe", the same universe the dialect board
 measures.
 """
@@ -45,7 +45,7 @@ def main():
             continue
         probe, args, _ref = synthesize(qual, qual, f)
         if probe is None:
-            continue  # no calling recipe: same bucket the board skips
+            continue  # no calling recipe, the same bucket the board skips
         n_seen += 1
         t0 = time.time()
         try:

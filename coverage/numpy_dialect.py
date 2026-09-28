@@ -1,14 +1,14 @@
-"""The dialect battery: every public numpy callable, measured.
+"""The dialect battery measures every public numpy callable.
 
 Enumerates np, np.linalg and np.fft public callables. Each one is
 probed with synthesized float inputs (brute force over a small shape
 menu, wrappers generated as real source so the instrumented retry can
 read them), traced, and verified against the untraced run.
 
-Classes: LIFT+match / refused / died / unverified (value compare
-failed) / uncallable (no synthesized input worked) / out-of-scope
+The classes are LIFT+match, refused, died, unverified (value compare
+failed), uncallable (no synthesized input worked), and out-of-scope
 (non-mathematical by rule, every rule name counted). The headline is
-lift over (lift + refused + died + unverified): the measured dialect.
+lift over (lift + refused + died + unverified), the measured dialect.
 """
 import inspect as _inspect
 import itertools
@@ -23,7 +23,7 @@ from skverify import to_sympy, Pair
 
 rng = np.random.default_rng(0)
 
-# non-mathematical by rule; every name lands in a COUNTED bucket
+# non-mathematical by rule. Every name lands in a COUNTED bucket
 OUT_OF_SCOPE = {
     "io": {"load", "save", "savez", "savez_compressed", "loadtxt", "savetxt",
            "genfromtxt", "fromfile", "frombuffer", "fromstring", "fromregex",
@@ -79,12 +79,12 @@ OUT_OF_SCOPE = {
 }
 OOS_LOOKUP = {n: cat for cat, names in OUT_OF_SCOPE.items() for n in names}
 # module names (fft, linalg, random) must not shadow FUNCTIONS of the
-# same name inside submodules: qualified names win
+# same name inside submodules. Qualified names win
 OOS_QUALIFIED_EXEMPT = {"np.fft.fft", "np.fft.ifft", "np.linalg.solve"}
 # copyto/place/putmask/fill_diagonal are supported as MUTATORS of traced
-# targets; as standalone f(concrete) probes they are not formula-producing.
+# targets. As standalone f(concrete) probes they are not formula-producing.
 # pad/delete/insert/append/block/resize are shape editors worth entries
-# someday; counted out-of-scope=infrastructure TODAY, disclosed here.
+# someday. They are counted out-of-scope=infrastructure TODAY, disclosed here.
 
 V6 = lambda: rng.uniform(0.5, 2.0, 6)
 M43 = lambda: rng.uniform(0.5, 2.0, (4, 3))
@@ -130,7 +130,7 @@ def make_probe(qual, expr_src, n_args):
 
 
 def synthesize(qual, callname, f):
-    """Find (probe, args, ref): traced-arg forms f(A), f(A,B), f(A, k)."""
+    """Find (probe, args, ref) from traced-arg forms f(A), f(A,B), f(A, k)."""
     forms = []
     for n_tr in (1, 2):
         for extra in ([], [2], [0.5]):

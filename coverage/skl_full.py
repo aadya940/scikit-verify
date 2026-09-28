@@ -1,4 +1,4 @@
-"""The full sklearn sweep: every tractable numerical API surface."""
+"""The full sklearn sweep over every tractable numerical API surface."""
 import signal
 import warnings
 
@@ -100,7 +100,7 @@ add("Normalizer", lambda a: PP.Normalizer().fit_transform(a), X)
 add("PolynomialFeatures", lambda a: PP.PolynomialFeatures(2).fit_transform(a), X[:5, :2])
 add("KernelCenterer", lambda a: PP.KernelCenterer().fit_transform(a), MP.linear_kernel(X[:5], X[:5]))
 
-# ---- linear models: coefficients from .fit
+# ---- linear models, coefficients from .fit
 add("LinearRegression", lambda a, b: LM.LinearRegression().fit(a, b).coef_, X, y)
 add("Ridge", lambda a, b: LM.Ridge(1.0).fit(a, b).coef_, X, y)
 add("Lasso", lambda a, b: LM.Lasso(0.1, max_iter=200).fit(a, b).coef_, X, y)

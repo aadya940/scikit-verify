@@ -1,8 +1,8 @@
-"""Exploration board: explore() over every function we lift.
+"""Exploration board that runs explore() over every function we lift.
 
-For each function: how many paths exist at this input shape, were
-they all visited, and what stopped us when they were not (cap,
-undecided region, per-path refusal). This is the covers() story
+For each function it records how many paths exist at this input shape,
+whether they were all visited, and what stopped us when they were not
+(cap, undecided region, per-path refusal). This is the covers() story
 measured against real library code instead of toy branches.
 """
 

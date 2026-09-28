@@ -1,4 +1,4 @@
-"""The common-numpy sweep: the API surface research scripts actually use."""
+"""The common-numpy sweep over the API surface research scripts actually use."""
 import signal
 import warnings
 

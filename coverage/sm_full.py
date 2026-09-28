@@ -1,5 +1,5 @@
-"""Full-surface statsmodels battery, skl_full's image: LIFT+match /
-refused / died, no time budget."""
+"""Full-surface statsmodels battery in skl_full's image. It reports
+LIFT+match, refused, and died, with no time budget."""
 import numpy as np
 import warnings
 warnings.filterwarnings("ignore")

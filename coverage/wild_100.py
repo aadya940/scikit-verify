@@ -1,11 +1,11 @@
-"""The 100+ wild sample: functions, classes and methods from the web.
+"""The 100+ wild sample of functions, classes and methods from the web.
 
-Sampling rule (fixed before looking): gh code search for twelve common
-numpy idioms, 25 hits each in search order, dedupe by repo, fetch the
-first 160 files. Candidates are module-level functions AND methods of
+The sampling rule was fixed before looking. It runs a gh code search for
+twelve common numpy idioms, 25 hits each in search order, dedupes by repo,
+and fetches the first 160 files. Candidates are module-level functions AND methods of
 module-level classes, self-contained (numpy/math names only, no
-decorators), with synthesizable inputs. Every exclusion is counted;
-nothing is skipped by hand.
+decorators), with synthesizable inputs. Every exclusion is counted,
+and nothing is skipped by hand.
 """
 import ast
 import glob
@@ -85,7 +85,7 @@ def synthesize(call, n_args, alarm=8):
 
     combos = list(itertools.product(range(len(SHAPE_MENU)), repeat=n_args))
     if len(combos) > 80:
-        # 4+ args: sample shape combinations instead of exhausting them
+        # 4+ args, so sample shape combinations instead of exhausting them
         idx = np.random.default_rng(1).permutation(len(combos))[:80]
         combos = [combos[i] for i in idx]
     for combo in combos:
