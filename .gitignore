@@ -12,7 +12,14 @@ htmlcov/
 __pycache__/
 *.pyc
 */__pycache__/*pypi-token.txt
-paper/
+paper/cover-letter.txt
+paper/chinubhai-code.tar.gz
+paper/paper.md
+paper/*.aux
+paper/*.log
+paper/*.bbl
+paper/*.blg
+paper/*.out
 unrelated.py
 coverage/scipy_audit*
 examples/how_skverify_helps.ipynb
