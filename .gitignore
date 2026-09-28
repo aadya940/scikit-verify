@@ -4,6 +4,10 @@ __pycache__/
 dist/
 build/
 .pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+*.swp
 .venv/
 __pycache__/
 *.pyc

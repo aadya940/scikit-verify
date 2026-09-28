@@ -107,6 +107,17 @@ your mechanism claims to handle (the tie, the empty axis, the
 in-place write). If the change touches branching, assert the
 conditions too: the formula and its assumptions are one result.
 
+To reproduce the coverage figure:
+
+```bash
+coverage run -m pytest
+coverage report
+```
+
+The source and the report options are set in `pyproject.toml`, so no
+flags are needed. Lines carrying `# pragma: no cover` are unreachable
+defensive branches; each states why on the line above it.
+
 ## AI policy
 
 Use AI for anything: code, tests, docs, this file. The one condition

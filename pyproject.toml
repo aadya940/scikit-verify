@@ -49,6 +49,7 @@ docs = [
 dev = [
     "pytest>=8",
     "hypothesis>=6",
+    "coverage>=7",
     "ruff",
     "scipy>=1.12",  # test material only: real kernels the tracer lifts
 ]
@@ -81,3 +82,9 @@ select = ["E", "F", "W", "I", "UP", "B"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["skverify"]
+
+[tool.coverage.report]
+show_missing = true
