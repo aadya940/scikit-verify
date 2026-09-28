@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for being here. This page is short on purpose: the code has a
+Thanks for being here. This page is short on purpose. The code has a
 small number of load-bearing rules, and knowing them saves you time.
 
 ## Setup
@@ -12,9 +12,9 @@ pip install -e .[dev]
 pytest -q
 ```
 
-One warning from experience: if `import skverify` ever resolves to a
+One warning from experience. If `import skverify` ever resolves to a
 copied install instead of your checkout, everything will look
-mysteriously stale. When in doubt:
+mysteriously stale. When in doubt, run:
 
 ```python
 import skverify; print(skverify.__file__)   # must be your checkout
@@ -22,8 +22,8 @@ import skverify; print(skverify.__file__)   # must be your checkout
 
 ## The design in five lines
 
-Every traced value is a Pair: the concrete value and a sympy
-expression, kept in lockstep. NumPy calls are intercepted through the
+Every traced value is a Pair, the concrete value and a sympy
+expression kept in lockstep. NumPy calls are intercepted through the
 dispatch protocol and mapped to symbolic form by a registry. Branches
 taken on data are recorded as conditions on the result. Compiled calls
 the trace cannot enter become named terms, checked against their
@@ -33,7 +33,7 @@ refuse with one sentence.
 ## The rules that are not negotiable
 
 1. **Exact or refuse.** Never return a formula that might be wrong.
-   A refusal with a clear sentence is a feature; a plausible guess is
+   A refusal with a clear sentence is a feature. A plausible guess is
    the bug this project exists to prevent.
 2. **Generic mechanisms, not per-library tables.** We support numpy
    semantics (allocation, reduction, indexing, masks, views). We do
@@ -71,26 +71,26 @@ python coverage/wild_100.py       # needs the fetched corpus
 python coverage/make_coverage.py  # regenerates doc/coverage.md
 ```
 
-A board line reads: lifted-and-matched, refused, died. Died must stay
+A board line reads as lifted-and-matched, refused, died. Died must stay
 zero. Refusals are honest and listed by reason.
 
 ## Good first contributions
 
-- A refused function whose reason names a missing numpy mechanism:
-  add the mechanism, watch several boards move at once.
+- A refused function whose reason names a missing numpy mechanism.
+  Add the mechanism, and several boards move at once.
 - New coverage boards for libraries we have not measured.
 - **A torch backend.** Torch has `__torch_function__`, which works
   much like the numpy protocol we intercept. A Tensor subclass whose
   value lane stays a real tensor (GPU included) with the same sympy
-  formula lane is the shape of it; elementwise + matmul +
+  formula lane is the shape of it. Elementwise + matmul +
   `torch.linalg.solve` would be a great first milestone. The hard
-  parts we already know about: in-place ops and views, and autograd
+  parts we already know about are in-place ops and views, and autograd
   (trace forward-only at first). If you want to take this on, open an
   issue and we will map it out together.
 
 ## Testing
 
-The test that matters is always the same one: trace the function,
+The test that matters is always the same one. Trace the function,
 evaluate the traced formula at the inputs, and compare against what
 the untraced function returns. The equation checks itself against the
 run that produced it. A typical test is four lines:
@@ -105,7 +105,7 @@ def test_my_case():
 For a new mechanism, add the case that used to fail, plus the edge
 your mechanism claims to handle (the tie, the empty axis, the
 in-place write). If the change touches branching, assert the
-conditions too: the formula and its assumptions are one result.
+conditions too. The formula and its assumptions are one result.
 
 To reproduce the coverage figure:
 
@@ -116,18 +116,18 @@ coverage report
 
 The source and the report options are set in `pyproject.toml`, so no
 flags are needed. Lines carrying `# pragma: no cover` are unreachable
-defensive branches; each states why on the line above it.
+defensive branches. Each states why on the line above it.
 
 ## AI policy
 
-Use AI for anything: code, tests, docs, this file. The one condition
-is that you have manually reviewed every line you submit and can
-explain it. You are the author; the AI was the typist. PRs that read
+Use AI for anything, including code, tests, docs, and this file. The one
+condition is that you have manually reviewed every line you submit and
+can explain it. You are the author, and the AI was the typist. PRs that read
 like nobody looked at them will be treated accordingly.
 
 ## Pull requests
 
 Tests for the change, suite green, boards rerun if the tracer was
 touched. Plain prose in comments and docs. If you are not sure whether
-an idea fits rule 2, open an issue first and ask; that conversation is
+an idea fits rule 2, open an issue first and ask. That conversation is
 cheap and welcome.

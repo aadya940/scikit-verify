@@ -40,9 +40,10 @@ out.formula
 # sqrt(Sum(w[j]*x[j]**2, (j, 0, 2))/Sum(w[j], (j, 0, 2)))
 ```
 
-Every formula comes as a certificate: the expression, plus the
-assumptions it was derived under. When code branches on your data, the
-branch taken becomes a stated hypothesis instead of a hidden one:
+Every formula comes as a certificate. The certificate is the
+expression, plus the assumptions it was derived under. When code
+branches on your data, the branch taken becomes a stated hypothesis
+instead of a hidden one:
 
 ```python
 out = to_sympy(np.median, np.array([3.0, 1.0, 4.0, 1.5]))
@@ -63,7 +64,7 @@ to_sympy(lambda a: a.astype(int).mean(), np.array([1.4, 2.6]))
 ```
 
 Tested against numpy, scipy, scikit-learn, statsmodels, cvxpy and
-random research code from GitHub; the boards in [coverage](coverage/)
+random research code from GitHub. The boards in [coverage](coverage/)
 regenerate every number.
 
 You can also state the formula you believe and let the trace check it,
@@ -82,12 +83,12 @@ def test_simpson_is_the_textbook_rule():
 ```
 
 A passing test means the code computes that formula, proved
-symbolically, not sampled; a failing one prints both formulas with a
+symbolically, not sampled. A failing one prints both formulas with a
 concrete counterexample. The
 [penalty matrix notebook](examples/penalty_matrix_check.ipynb) is
 this in action on a real derivation.
 
-The decorator checks every reachable branch by default: the Z3
+The decorator checks every reachable branch by default. The Z3
 solver finds inputs for the paths your test data never took, or
 proves no such inputs exist. A green test cannot hide an unchecked
 branch.
@@ -132,11 +133,11 @@ Measured over every public numpy function the tracer lifts, 274 of
 [branch coverage notebook](examples/branch_coverage_check.ipynb)
 tells the whole story.
 
-In a nutshell, correctness of numerical programs is two questions:
+Correctness of numerical programs is two questions:
 1. Is the math itself correct?
 2. Is the code numerically stable?
 
-scikit-verify answers the first question!
+scikit-verify answers the first question.
 
 ## Installation
 
@@ -152,8 +153,8 @@ pip wheel, nothing to install system-wide). The import name is
 pip install "scikit-verify[mcp]"          # MCP server for coding agents
 ```
 
-Pre-alpha; the API may change. Iterative solvers at real sizes can be
-slow to trace (minutes, not wrong); the boards in coverage/ carry
+Pre-alpha. The API may change. Iterative solvers at real sizes can be
+slow to trace (minutes, not wrong). The boards in coverage/ carry
 timings.
 
 ## Lineage
@@ -168,7 +169,7 @@ into its loop structure follows Larus's whole-program paths (PLDI
 The stance that code verification means checking code against the
 mathematics it claims to implement is Oberkampf and Roy's (2010).
 Verified lifting of stencils to summaries was developed by Kamil et
-al. (PLDI 2016) for performance; scikit-verify lifts for correctness.
+al. (PLDI 2016) for performance. scikit-verify lifts for correctness.
 Converting NumPy to SymPy was wished for in
 [sympy#2810](https://github.com/sympy/sympy/issues/2810) (2014).
 
@@ -176,5 +177,3 @@ Converting NumPy to SymPy was wished for in
 
 BSD-3-Clause. scikit-verify is an independent project and is not affiliated
 with the SciPy developers.
-
-If this is useful to you, a star helps others find it ⭐

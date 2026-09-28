@@ -1,21 +1,21 @@
 # Loops as domains
 
 *Status: implemented. This is the design note behind the fold that now
-lives in the formula lane (`skverify/recurrence.py`): Iterate, plant
-and probe, segment re-engagement, held head symbols. Kept as the
-record of why it is shaped the way it is; the opening paragraph
+lives in the formula lane (`skverify/recurrence.py`), covering Iterate,
+plant and probe, segment re-engagement, and held head symbols. Kept as
+the record of why it is shaped the way it is. The opening paragraph
 describes the world BEFORE it landed.*
 
-A loop is an axis in time. Array axes are already domains: `x[i]` with
-bounds, bound by `Sum(..., (i, 0, n-1))`. An iteration index `k` is the
+A loop is an axis in time. Array axes are already domains. Consider
+`x[i]` with bounds, bound by `Sum(..., (i, 0, n-1))`. An iteration index `k` is the
 same object, bound by a recurrence instead of a reduction. Today the
 tracer unrolls loops into the live formula, so iterative solvers
-(BayesianRidge: 300 iterations, each formula containing the last)
+(BayesianRidge runs 300 iterations, each formula containing the last)
 snowball and never finish. Folding exists (`_fold_runs`,
 `derivation()`) but runs post-hoc on `.steps` -- downstream of the
 blowup. This note moves the fold into the formula lane itself.
 
-Everything below is explicitly sympy: `subs`, `doit`, `lambdify`,
+Everything below is explicitly sympy. `subs`, `doit`, `lambdify`,
 `free_symbols` work on the certificate with no side-channel records.
 All claims execution-verified on sympy 1.14.
 
@@ -23,17 +23,17 @@ All claims execution-verified on sympy 1.14.
 
 | loop shape | sympy object | verified behavior |
 |---|---|---|
-| accumulator `t += x[k]` | `Sum` / `Product` | already emitted for np.sum; hand loops should reach it |
+| accumulator `t += x[k]` | `Sum` / `Product` | already emitted for np.sum, and hand loops should reach it |
 | linear scalar recurrence | `rsolve` -> closed expression | `rsolve(C(k+1)-2C(k)-1, C(k), {C(0):1})` -> `2**(k+1)-1` |
-| linear VECTOR recurrence | `MatPow`: `C[k] = A**k * C[0]` | `(A**k).doit()` diagonalizes symbolically; `subs(k,3)` exact |
-| general scalar recurrence | `RecursiveSeq` | Basic; `subs` traverses; `.coeff(k)` unrolls lazily |
+| linear VECTOR recurrence | `MatPow`, `C[k] = A**k * C[0]` | `(A**k).doit()` diagonalizes symbolically, and `subs(k,3)` is exact |
+| general scalar recurrence | `RecursiveSeq` | a `Basic` object, `subs` traverses it, and `.coeff(k)` unrolls lazily |
 | general vector / coupled | custom `Iterate` Function (below) | held form, lazy unroll, Tuple state |
 
 ## Verified capabilities and limits
 
 RecursiveSeq (sympy.series.sequences):
-- IS `Basic`; `free_symbols` correct; symbolic parameters in the body
-  survive (`coeff(3)` of `y=2y+a` -> `7*a + 8`); `subs` composes.
+- IS `Basic`. `free_symbols` correct. Symbolic parameters in the body
+  survive (`coeff(3)` of `y=2y+a` -> `7*a + 8`). `subs` composes.
 - Scalar ONLY: Matrix and MatrixSymbol terms fail (AttributeError /
   ShapeError). Tuple packing fails. A second Function in the body
   stays unresolved (`z(0), z(1)` free) -- no coupled systems.
@@ -56,13 +56,13 @@ class Iterate(sympy.Function):
             return out
 ```
 - Held while `k` is symbolic: `Iterate(Lambda(c, 2c+a), 1, K)`,
-  free symbols `{a, K}`. `subs(K, 3)` unrolls on demand -> `7*a + 8`;
-  after full substitution it is a number (lambdify-able).
+  free symbols `{a, K}`. `subs(K, 3)` unrolls on demand -> `7*a + 8`.
+  After full substitution it is a number (lambdify-able).
 - Vector and COUPLED state as one `Tuple`:
   `Iterate(Lambda((c1,c2), Tuple(c1+c2, c1*a)), Tuple(1,2), K)`
   -> `subs(K,2)` -> `(a+3, 3*a)`. This is the BayesianRidge shape
   (coef and alpha updating each other).
-- A subclass of `sympy.Function` IS sympy: printing, traversal,
+- A subclass of `sympy.Function` IS sympy. Printing, traversal,
   substitution all come from Basic. No metadata channel.
 
 ## Trace-time mechanics
@@ -72,21 +72,21 @@ The hooks exist. The rewriter already tags every loop
 Pairs are attributable to (loop, iteration) DURING the trace.
 
 1. Run iteration 0 and 1 concretely, formulas eager (today's path).
-2. At iteration 1's end, attempt the fold: do iteration 1's formulas
+2. At iteration 1's end, attempt the fold. Do iteration 1's formulas
    equal iteration 0's under a template with the loop-carried state
    replaced by a state symbol? This is `_generalize`'s check, applied
    live. Multiple carried variables pack into one Tuple state.
-3. Fold succeeds: replace the carried Pairs' formulas with the tier
+3. When the fold succeeds, replace the carried Pairs' formulas with the tier
    object (Sum/rsolve/MatPow/RecursiveSeq/Iterate) and run remaining
    iterations on the VALUE LANE ONLY, verifying each iteration's
    concrete values against the template (the per-iteration residual --
    same role contracts play for atoms). Formula size is now
    O(template), independent of iteration count.
-4. Fold fails (body not one template -- data-dependent branch inside):
-   keep today's unrolling, with a formula-size budget that refuses
-   loudly instead of hanging.
+4. When the fold fails (body not one template, a data-dependent branch
+   inside), keep today's unrolling, with a formula-size budget that
+   refuses loudly instead of hanging.
 
-Data-dependent exits (`while not converged`) are already guards: the
+Data-dependent exits (`while not converged`) are already guards. The
 stopping condition's `__bool__` records the path. `K = 17` enters the
 formula as a concrete bound with the convergence guard in
 preconditions, exactly like searchsorted's counting bound.
@@ -104,6 +104,6 @@ preconditions, exactly like searchsorted's counting bound.
 - Loop body changes shape between iterations (branch taken differently)
   and sizes exceed the budget -> "iterative body is not one template".
 - `rsolve` fails and the recurrence is nonlinear scalar -> RecursiveSeq
-  (still exact); vector -> Iterate (still exact). Refusal is only for
+  (still exact), and vector -> Iterate (still exact). Refusal is only for
   non-foldable bodies, never for "no closed form" -- a held recurrence
   IS an exact formula.
