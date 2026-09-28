@@ -173,6 +173,13 @@ al. (PLDI 2016) for performance. scikit-verify lifts for correctness.
 Converting NumPy to SymPy was wished for in
 [sympy#2810](https://github.com/sympy/sympy/issues/2810) (2014).
 
+## AI policy
+
+You can use AI for any contribution, including code, tests, and docs.
+The one condition is that you have read every line you submit and can
+explain it. You are the author and the AI is the typist. Pull requests
+that read like nobody looked at them will be treated as such.
+
 ## License
 
 BSD-3-Clause. scikit-verify is an independent project and is not affiliated
