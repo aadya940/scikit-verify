@@ -153,9 +153,9 @@ pip wheel, nothing to install system-wide). The import name is
 pip install "scikit-verify[mcp]"          # MCP server for coding agents
 ```
 
-Pre-alpha. The API may change. Iterative solvers at real sizes can be
-slow to trace (minutes, not wrong). The boards in coverage/ carry
-timings.
+The API may change while the project is young. Iterative solvers at
+real sizes can be slow to trace (minutes, not wrong). The boards in
+coverage/ carry timings.
 
 ## Lineage
 
