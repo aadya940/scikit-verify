@@ -1,8 +1,8 @@
 """Regenerate doc/coverage.md from the battery outputs.
 
 Run each script, save its stdout next to it as <name>.out, then run
-this. The page is a tracking list: every function we tried, and what
-happened -- nothing else.
+this. The page is a tracking list of every function we tried, and what
+happened, nothing else.
 """
 import re
 import sys

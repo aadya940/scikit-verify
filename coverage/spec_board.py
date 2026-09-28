@@ -1,7 +1,7 @@
 """Spec board: docstring formulas held to their implementations.
 
 Every spec below is transcribed from the function's OWN docstring (or
-the textbook identity the docstring names) -- never from the trace.
+the textbook identity the docstring names), never from the trace.
 The board measures the @specifies story end to end: how much shipped
 numerical Python can be held to the mathematics it documents, and at
 which verdict tier.

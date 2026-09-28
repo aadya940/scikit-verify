@@ -4,7 +4,7 @@ Reuses the dialect board's machinery: walk every public callable in
 np, np.linalg and np.fft, synthesize a call that lifts, then run
 explore() on it. Tally: coverage proven / undecided / capped /
 refused / timed out. The honest denominator is "functions that lift
-with the synthesized recipe" -- the same universe the dialect board
+with the synthesized recipe", the same universe the dialect board
 measures.
 """
 
