@@ -89,7 +89,7 @@ ok("median traces through its guarded sort")
 print("── refusal guards ──")
 expect_raise(lambda: bool(u), NotImplementedError, "__bool__ refuses (no silent branching)")
 
-print("\nALL GREEN — engine verified.")
+print("\nALL GREEN. Engine verified.")
 
 
 s = np.sum(u[1:] - u[:-1])

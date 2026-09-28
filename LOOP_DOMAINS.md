@@ -12,7 +12,7 @@ same object, bound by a recurrence instead of a reduction. Today the
 tracer unrolls loops into the live formula, so iterative solvers
 (BayesianRidge runs 300 iterations, each formula containing the last)
 snowball and never finish. Folding exists (`_fold_runs`,
-`derivation()`) but runs post-hoc on `.steps` -- downstream of the
+`derivation()`) but runs post-hoc on `.steps`, downstream of the
 blowup. This note moves the fold into the formula lane itself.
 
 Everything below is explicitly sympy. `subs`, `doit`, `lambdify`,
@@ -36,7 +36,7 @@ RecursiveSeq (sympy.series.sequences):
   survive (`coeff(3)` of `y=2y+a` -> `7*a + 8`). `subs` composes.
 - Scalar ONLY: Matrix and MatrixSymbol terms fail (AttributeError /
   ShapeError). Tuple packing fails. A second Function in the body
-  stays unresolved (`z(0), z(1)` free) -- no coupled systems.
+  stays unresolved (`z(0), z(1)` free), so no coupled systems.
 
 MatPow:
 - `A**k` with symbolic integer `k` is native, `.doit()` produces the
@@ -79,8 +79,8 @@ Pairs are attributable to (loop, iteration) DURING the trace.
 3. When the fold succeeds, replace the carried Pairs' formulas with the tier
    object (Sum/rsolve/MatPow/RecursiveSeq/Iterate) and run remaining
    iterations on the VALUE LANE ONLY, verifying each iteration's
-   concrete values against the template (the per-iteration residual --
-   same role contracts play for atoms). Formula size is now
+   concrete values against the template (the per-iteration residual,
+   the same role contracts play for atoms). Formula size is now
    O(template), independent of iteration count.
 4. When the fold fails (body not one template, a data-dependent branch
    inside), keep today's unrolling, with a formula-size budget that
@@ -105,5 +105,5 @@ preconditions, exactly like searchsorted's counting bound.
   and sizes exceed the budget -> "iterative body is not one template".
 - `rsolve` fails and the recurrence is nonlinear scalar -> RecursiveSeq
   (still exact), and vector -> Iterate (still exact). Refusal is only for
-  non-foldable bodies, never for "no closed form" -- a held recurrence
+  non-foldable bodies, never for "no closed form". A held recurrence
   IS an exact formula.

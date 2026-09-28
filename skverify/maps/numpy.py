@@ -205,7 +205,7 @@ def _held_sum(body, *limits):
     Piecewise) are resolved exactly by unrolling (doit + piecewise_fold
     + prune) before construction; the Sum is then built via the normal
     constructor. Any residual binder escape is detected by free-symbol
-    comparison and refused — a bypass via ``Expr.__new__`` would be
+    comparison and refused. A bypass via ``Expr.__new__`` would be
     momentarily correct but later doit/simplify would re-corrupt, so
     refusal is the only safe output.
     """
@@ -282,8 +282,8 @@ def _held_prod(body, *limits):
     case). Selector products (inner Product over its own dummy's Piecewise)
     are resolved exactly by unrolling (doit + piecewise_fold + prune) before
     construction; the Product is then built via the normal constructor. Any
-    residual binder escape is detected by free-symbol comparison and refused
-    — a bypass via ``Expr.__new__`` would be momentarily correct but later
+    residual binder escape is detected by free-symbol comparison and refused.
+    A bypass via ``Expr.__new__`` would be momentarily correct but later
     doit/simplify would re-corrupt, so refusal is the only safe output.
     """
     if body.has(sympy.Piecewise) and body.has(sympy.Product):
