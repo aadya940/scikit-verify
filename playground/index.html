@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>scikit-verify playground</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/pyodide/v0.28.0/full/pyodide.js"></script>
+<style>
+  :root {
+    --bg: #ffffff; --surface: #f7f7f5; --border: #e3e3df;
+    --text: #1a1a18; --muted: #6b6b66; --accent: #185fa5; --danger: #a32d2d;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#1a1a18; --surface:#232320; --border:#3a3a36;
+            --text:#ededea; --muted:#9b9b95; --accent:#85b7eb; --danger:#f09595; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:24px; background:var(--bg); color:var(--text);
+         font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; line-height:1.6; }
+  .wrap { max-width: 1100px; margin: 0 auto; }
+  h1 { font-size: 20px; font-weight: 500; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 14px; margin: 0 0 18px; }
+  .examples { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px; }
+  button { font: inherit; font-size: 13px; padding: 5px 12px; cursor: pointer;
+           background: transparent; color: var(--text);
+           border: 1px solid var(--border); border-radius: 8px; }
+  button:hover { background: var(--surface); }
+  button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+  .panes { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: stretch; }
+  @media (max-width: 820px) { .panes { grid-template-columns: 1fr; } }
+  .pane { border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px;
+          background: var(--bg); min-height: 320px; display: flex; flex-direction: column; }
+  .pane.code { background: var(--surface); }
+  .label { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  textarea { flex:1; width:100%; border:none; outline:none; resize:vertical;
+             background:transparent; color:var(--text);
+             font-family: var(--mono); font-size: 13.5px; line-height: 1.65; min-height: 260px; }
+  #math { flex:1; display:flex; align-items:center; justify-content:center;
+          overflow-x:auto; padding: 6px 0; font-size: 17px; }
+  .meta { font-size: 12.5px; color: var(--muted); margin-top: 8px; }
+  .meta .cond { display:block; margin-top:3px; }
+  .sym { font-family: var(--mono); font-size: 11.5px; color: var(--muted);
+         border-top: 1px solid var(--border); padding-top: 8px; margin-top: 8px;
+         white-space: pre-wrap; word-break: break-word; }
+  .refusal { color: var(--danger); font-size: 13.5px; font-family: var(--mono); }
+  .status { font-size: 13px; color: var(--muted); margin-bottom: 12px; }
+  .dot { display:inline-block; width:7px; height:7px; border-radius:50%;
+         background: var(--muted); margin-right:6px; vertical-align: 1px; }
+  .dot.ok { background: #1d9e75; } .dot.err { background: #d85a30; }
+  footer { margin-top: 18px; font-size: 12.5px; color: var(--muted); }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>scikit-verify playground</h1>
+  <p class="sub">Write numpy on the left. The mathematics it computes appears on the right, as you type.</p>
+
+  <div class="status" id="status"><span class="dot"></span>loading python, numpy and sympy in your browser</div>
+
+  <div class="examples" id="examples"></div>
+
+  <div class="panes">
+    <div class="pane code">
+      <div class="label">your numpy</div>
+      <textarea id="code" spellcheck="false" autocomplete="off"></textarea>
+    </div>
+    <div class="pane">
+      <div class="label">the math it computes</div>
+      <div id="math"></div>
+      <div class="meta" id="meta"></div>
+      <div class="sym" id="sym"></div>
+    </div>
+  </div>
+
+  <footer>
+    Runs entirely in your browser through Pyodide. Nothing is uploaded.
+    Arrays are traced at length 5. See
+    <a href="https://github.com/aadya940/scikit-verify">the repository</a>.
+  </footer>
+</div>
+
+<script>
+const EXAMPLES = [
+  ["weighted rms", "def weighted_rms(x, w):\n    return np.sqrt(np.sum(w * x**2) / np.sum(w))"],
+  ["sample variance", "def sample_var(x):\n    m = x.mean()\n    return np.sum((x - m)**2) / (len(x) - 1)"],
+  ["median branches", "def middle(a):\n    return np.median(a)"],
+  ["softmax", "def softmax(v):\n    e = np.exp(v - v.max())\n    return e / e.sum()"],
+  ["a refusal", "def rounded(a):\n    return a.astype(int).mean()"],
+];
+
+const DRIVER = `
+import inspect, json, linecache, warnings
+warnings.filterwarnings("ignore")
+import numpy as np, sympy
+from skverify import to_sympy
+
+_RUN = [0]
+
+_SAMPLES = [
+    np.array([3.0, 1.0, 4.0, 1.5, 2.2]),
+    np.array([2.0, 1.0, 5.0, 3.0, 4.0]),
+    np.array([0.7, 1.2, 2.5, 0.3, 0.9]),
+]
+
+def _conds(pre):
+    if pre is None or pre is True or pre is sympy.true:
+        return []
+    return list(pre.args) if isinstance(pre, sympy.And) else [pre]
+
+def skv_render(src):
+    # skverify's instrumented retry reads the function's source with
+    # inspect.getsource, which needs the code to be findable. Register it in
+    # linecache under a unique name so exec'd functions can be rewritten.
+    _RUN[0] += 1
+    fname = f"<playground-{_RUN[0]}>"
+    linecache.cache[fname] = (len(src), None, src.splitlines(True), fname)
+    ns = {"np": np, "numpy": np, "sympy": sympy}
+    try:
+        exec(compile(src, fname, "exec"), ns)
+    except Exception as e:
+        return json.dumps({"state": "syntax", "msg": f"{type(e).__name__}: {e}"})
+    fns = [v for v in ns.values()
+           if inspect.isfunction(v) and v.__code__.co_filename == fname]
+    if not fns:
+        return json.dumps({"state": "empty"})
+    fn = fns[-1]
+    npar = len(inspect.signature(fn).parameters)
+    args = [_SAMPLES[i % len(_SAMPLES)].copy() for i in range(npar)]
+    try:
+        out = to_sympy(fn, *args)
+    except NotImplementedError as e:
+        return json.dumps({"state": "refused", "msg": str(e), "name": fn.__name__})
+    except Exception as e:
+        return json.dumps({"state": "error", "msg": f"{type(e).__name__}: {e}"})
+    try:
+        tex = sympy.latex(out.formula)
+        conds = [sympy.latex(c) for c in _conds(out.preconditions)]
+        sym = str(out.formula)
+    except Exception as e:
+        return json.dumps({"state": "error", "msg": f"render: {e}"})
+    sealed = []
+    try:
+        sealed = [str(u[0]) for u in (out.unchecked or ())]
+    except Exception:
+        pass
+    return json.dumps({"state": "ok", "name": fn.__name__, "latex": tex,
+                       "sym": sym, "conds": conds, "sealed": sealed})
+`;
+
+const $ = id => document.getElementById(id);
+let pyodide = null, timer = null, running = false, pending = false;
+
+function setStatus(text, cls) {
+  $("status").innerHTML = '<span class="dot ' + (cls || "") + '"></span>' + text;
+}
+
+function showMath(tex) {
+  try { katex.render(tex, $("math"), { displayMode: true, throwOnError: false }); }
+  catch (e) { $("math").textContent = tex; }
+}
+
+function paint(r) {
+  const meta = $("meta"), sym = $("sym");
+  meta.innerHTML = ""; sym.textContent = "";
+  if (r.state === "ok") {
+    showMath(r.latex);
+    if (r.conds.length) {
+      meta.innerHTML = "<span>holds when</span>" + r.conds.map(c => {
+        const s = document.createElement("span");
+        s.className = "cond";
+        try { s.innerHTML = katex.renderToString(c, { throwOnError: false }); }
+        catch (e) { s.textContent = c; }
+        return s.outerHTML;
+      }).join("");
+    }
+    if (r.sealed && r.sealed.length) {
+      meta.innerHTML += "<span class='cond'>sealed calls: " + r.sealed.join(", ") + "</span>";
+    }
+    sym.textContent = "formula = " + r.sym;
+  } else if (r.state === "refused") {
+    $("math").innerHTML = "<span class='refusal'>refused</span>";
+    meta.textContent = r.msg;
+    sym.textContent = "scikit-verify refuses instead of guessing. This is a designed outcome.";
+  } else if (r.state === "syntax") {
+    $("math").innerHTML = "";
+    meta.textContent = r.msg;
+  } else if (r.state === "empty") {
+    $("math").innerHTML = "";
+    meta.textContent = "define a function to see its mathematics";
+  } else {
+    $("math").innerHTML = "";
+    meta.textContent = r.msg || "could not trace this one";
+  }
+}
+
+async function run() {
+  if (!pyodide) return;
+  if (running) { pending = true; return; }
+  running = true;
+  const src = $("code").value;
+  try {
+    pyodide.globals.set("_src", src);
+    const raw = await pyodide.runPythonAsync("skv_render(_src)");
+    paint(JSON.parse(raw));
+  } catch (e) {
+    paint({ state: "error", msg: String(e).split("\n").pop() });
+  }
+  running = false;
+  if (pending) { pending = false; run(); }
+}
+
+function schedule() { clearTimeout(timer); timer = setTimeout(run, 350); }
+
+function loadExample(i) {
+  $("code").value = EXAMPLES[i][1];
+  [...document.querySelectorAll("#examples button")].forEach((b, k) =>
+    b.setAttribute("aria-pressed", k === i ? "true" : "false"));
+  run();
+}
+
+EXAMPLES.forEach((ex, i) => {
+  const b = document.createElement("button");
+  b.textContent = ex[0];
+  b.onclick = () => loadExample(i);
+  $("examples").appendChild(b);
+});
+$("code").value = EXAMPLES[0][1];
+$("code").addEventListener("input", schedule);
+
+(async function boot() {
+  try {
+    pyodide = await loadPyodide();
+    setStatus("installing numpy and sympy");
+    await pyodide.loadPackage(["numpy", "sympy", "micropip"]);
+    setStatus("installing scikit-verify");
+    // deps=False: z3-solver has no wasm wheel and is only needed by explore(),
+    // which this page does not use. Done in Python so the keyword argument
+    // is a real keyword argument.
+    await pyodide.runPythonAsync(
+      "import micropip\n" +
+      "await micropip.install('scikit-verify', deps=False)\n");
+    await pyodide.runPythonAsync(DRIVER);
+    setStatus("ready, running in your browser", "ok");
+    loadExample(0);
+  } catch (e) {
+    console.error("boot failed", e);
+    const lines = String(e).trim().split("\n");
+    setStatus("could not start: " + lines[lines.length - 1], "err");
+  }
+})();
+</script>
+</body>
+</html>
