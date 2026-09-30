@@ -285,13 +285,32 @@ async function run() {
 
 function schedule(){ clearTimeout(timer); timer = setTimeout(run, 400); }
 
-$("share").onclick = () => {
-  const u = location.origin + location.pathname + "#src=" + btoa(unescape(encodeURIComponent(cm.getValue())));
-  navigator.clipboard.writeText(u).then(
-    () => { $("share").textContent = "copied"; setTimeout(()=>$("share").textContent="copy link", 1200); },
-    () => { history.replaceState(null,"","#src="+btoa(unescape(encodeURIComponent(cm.getValue())))); }
-  );
+function encodeSrc(s){ return btoa(unescape(encodeURIComponent(s))); }
+function decodeSrc(b){ return decodeURIComponent(escape(atob(b))); }
+
+$("share").onclick = async () => {
+  // Put the link in the address bar first, so it is shareable even when the
+  // clipboard is unavailable, then try the clipboard and say which happened.
+  history.replaceState(null, "", "#src=" + encodeSrc(cm.getValue()));
+  let ok = false;
+  try { await navigator.clipboard.writeText(location.href); ok = true; } catch (e) {}
+  const b = $("share");
+  b.textContent = ok ? "copied" : "link is in the address bar";
+  setTimeout(() => { b.textContent = "copy link"; }, 1600);
 };
+
+// A shared link pasted while the page is already open changes only the
+// fragment, which does not reload. Pick it up explicitly.
+addEventListener("hashchange", () => {
+  const m = location.hash.match(/#src=(.+)$/);
+  if (!m) return;
+  try {
+    const src = decodeSrc(m[1]);
+    if (src === cm.getValue()) return;
+    tabs.unshift({ name: "shared", src });
+    active = 0; cm.setValue(src); drawSrcTabs(); run();
+  } catch (e) {}
+});
 
 cm = CodeMirror.fromTextArea($("code"), {
   mode: "python", lineNumbers: true, indentUnit: 4, tabSize: 4,
@@ -304,8 +323,7 @@ cm.on("change", () => { tabs[active].src = cm.getValue(); schedule(); });
   const m = location.hash.match(/#src=(.+)$/);
   if (m) {
     try {
-      const src = decodeURIComponent(escape(atob(m[1])));
-      tabs.unshift({ name: "shared", src });
+      tabs.unshift({ name: "shared", src: decodeSrc(m[1]) });
       active = 0;
     } catch (e) {}
   }
