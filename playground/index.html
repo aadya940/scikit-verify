@@ -47,7 +47,7 @@
   .CodeMirror { height:100%; font-family:var(--mono); font-size:13.5px; background:transparent; }
   @media (max-width:860px){ .CodeMirror{ height:300px; } .body{ max-height:420px; } }
   #mathPane { padding:18px 16px; }
-  #bigmath { display:flex; align-items:center; justify-content:center; min-height:110px; overflow-x:auto; font-size:17px; }
+  .bigmath { display:flex; align-items:center; justify-content:center; min-height:90px; overflow-x:auto; font-size:17px; }
   .section { font-size:11.5px; text-transform:none; color:var(--muted); margin:14px 0 6px; }
   .cond { display:block; margin:4px 0; }
   pre.ir { margin:0; padding:14px 16px; font-family:var(--mono); font-size:12.5px; line-height:1.7;
@@ -159,28 +159,47 @@ def skv_render(src):
         return json.dumps({"state": "refused", "msg": str(e), "name": fn.__name__})
     except Exception as e:
         return json.dumps({"state": "error", "msg": f"{type(e).__name__}: {e}"})
-    d = {"state": "ok", "name": fn.__name__}
-    try:
-        d["latex"] = sympy.latex(out.formula)
-        d["sym"] = str(out.formula)
-        d["conds"] = [sympy.latex(c) for c in _conds(out.preconditions)]
-    except Exception as e:
-        return json.dumps({"state": "error", "msg": f"render: {e}"})
-    try:
-        d["ir"] = out.derivation()
-    except Exception:
-        d["ir"] = ""
-    d["cse"] = _cse_text(out)
-    try:
-        v = out.value
-        d["value"] = str(v if np.isscalar(v) else np.asarray(v).round(6).tolist())
-    except Exception:
-        d["value"] = ""
-    try:
-        d["sealed"] = [str(u[0]) for u in (out.unchecked or ())]
-    except Exception:
-        d["sealed"] = []
-    d["shape"] = str(getattr(out, "shape", ""))
+    # Functions like np.linalg.eig and np.modf return several traced values.
+    parts = list(out) if isinstance(out, tuple) else [out]
+    d = {"state": "ok", "name": fn.__name__, "parts": [], "conds": [],
+         "sealed": [], "ir": "", "cse": "", "value": "", "shape": ""}
+    seen_c, seen_s, irs, cses, vals, shapes = set(), set(), [], [], [], []
+    for k, p in enumerate(parts):
+        label = f"out[{k}]" if len(parts) > 1 else ""
+        try:
+            d["parts"].append({"label": label,
+                               "latex": sympy.latex(p.formula),
+                               "sym": str(p.formula)})
+        except Exception as e:
+            return json.dumps({"state": "error", "msg": f"render: {e}"})
+        for c in _conds(getattr(p, "preconditions", None)):
+            t = sympy.latex(c)
+            if t not in seen_c:
+                seen_c.add(t); d["conds"].append(t)
+        for u in (getattr(p, "unchecked", None) or ()):
+            t = str(u[0])
+            if t not in seen_s:
+                seen_s.add(t); d["sealed"].append(t)
+        try:
+            txt = p.derivation()
+            irs.append((f"# {label}\\n" + txt) if label else txt)
+        except Exception:
+            pass
+        c = _cse_text(p)
+        if c:
+            cses.append((f"# {label}\\n" + c) if label else c)
+        try:
+            v = p.value
+            vals.append(str(v if np.isscalar(v) else np.asarray(v).round(6).tolist()))
+        except Exception:
+            vals.append("")
+        shapes.append(str(getattr(p, "shape", "")))
+    d["ir"] = "\\n\\n".join(irs)
+    d["cse"] = "\\n\\n".join(cses)
+    d["value"] = " , ".join(vals) if len(parts) > 1 else (vals[0] if vals else "")
+    d["shape"] = " , ".join(shapes) if len(parts) > 1 else (shapes[0] if shapes else "")
+    d["latex"] = d["parts"][0]["latex"]
+    d["sym"] = " , ".join(p["sym"] for p in d["parts"])
     return json.dumps(d)
 `;
 
@@ -235,9 +254,16 @@ function paint() {
     return;
   }
   if (outTab === "math") {
-    b.innerHTML = '<div id="mathPane"><div id="bigmath"></div><div id="extra"></div></div>';
-    try { katex.render(r.latex, $("bigmath"), { displayMode: true, throwOnError: false }); }
-    catch (e) { $("bigmath").textContent = r.sym; }
+    const parts = r.parts && r.parts.length ? r.parts : [{ label: "", latex: r.latex, sym: r.sym }];
+    b.innerHTML = '<div id="mathPane">' + parts.map((p, i) =>
+      (p.label ? '<div class="section">' + esc(p.label) + '</div>' : '') +
+      '<div class="bigmath" id="bm' + i + '"></div>').join("") +
+      '<div id="extra"></div></div>';
+    parts.forEach((p, i) => {
+      const el = document.getElementById("bm" + i);
+      try { katex.render(p.latex, el, { displayMode: true, throwOnError: false }); }
+      catch (e) { el.textContent = p.sym; }
+    });
     let h = "";
     if (r.conds && r.conds.length) {
       h += '<div class="section">holds when</div>';
