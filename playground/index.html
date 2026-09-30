@@ -6,7 +6,6 @@
 <title>scikit-verify explorer</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.css">
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/theme/material-darker.min.css">
 <script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/codemirror.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/codemirror/5.65.16/mode/python/python.min.js"></script>
@@ -17,16 +16,15 @@
     --text:#1a1a18; --muted:#6b6b66; --accent:#185fa5; --danger:#a32d2d; --ok:#0f6e56;
     --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
-  @media (prefers-color-scheme: dark) {
-    :root { --bg:#191918; --surface:#232320; --surface2:#2b2b28; --border:#3a3a36;
-            --text:#ededea; --muted:#9b9b95; --accent:#85b7eb; --danger:#f09595; --ok:#5dcaa5; }
-  }
   * { box-sizing:border-box; }
   html,body { height:100%; }
-  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.55 ui-sans-serif,system-ui,-apple-system,sans-serif; }
+  body { margin:0; background:#ffffff; color:var(--text); font:14px/1.55 ui-sans-serif,system-ui,-apple-system,sans-serif; }
   header { display:flex; align-items:baseline; gap:12px; padding:10px 16px; border-bottom:1px solid var(--border); flex-wrap:wrap; }
   header h1 { font-size:15px; font-weight:500; margin:0; }
   header .tag { font-size:12px; color:var(--muted); }
+  header .nplogo { display:flex; align-items:center; }
+  header .glink { font-size:12.5px; color:var(--accent); text-decoration:none; padding:4px 8px; }
+  header .glink:hover { text-decoration:underline; }
   header .right { margin-left:auto; display:flex; gap:8px; align-items:center; }
   .status { font-size:12px; color:var(--muted); }
   .dot { display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--muted); margin-right:5px; }
@@ -66,10 +64,24 @@
 </head>
 <body>
 <header>
+  <span class="nplogo" aria-hidden="true">
+    <svg viewBox="0 0 24 24" width="22" height="22">
+      <rect x="1"  y="1"  width="6" height="6" rx="1" fill="#4dabcf"/>
+      <rect x="9"  y="1"  width="6" height="6" rx="1" fill="#4d77cf"/>
+      <rect x="17" y="1"  width="6" height="6" rx="1" fill="#4dabcf"/>
+      <rect x="1"  y="9"  width="6" height="6" rx="1" fill="#4d77cf"/>
+      <rect x="9"  y="9"  width="6" height="6" rx="1" fill="#4dabcf"/>
+      <rect x="17" y="9"  width="6" height="6" rx="1" fill="#4d77cf"/>
+      <rect x="1"  y="17" width="6" height="6" rx="1" fill="#4dabcf"/>
+      <rect x="9"  y="17" width="6" height="6" rx="1" fill="#4d77cf"/>
+      <rect x="17" y="17" width="6" height="6" rx="1" fill="#4dabcf"/>
+    </svg>
+  </span>
   <h1>scikit-verify explorer</h1>
-  <span class="tag">numpy in, mathematics out</span>
+  <span class="tag">Type a NumPy program</span>
   <div class="right">
     <span class="status" id="status"><span class="dot"></span>booting</span>
+    <a class="glink" href="guide.html">guide</a>
     <button id="share">copy link</button>
   </div>
 </header>
@@ -283,7 +295,7 @@ $("share").onclick = () => {
 
 cm = CodeMirror.fromTextArea($("code"), {
   mode: "python", lineNumbers: true, indentUnit: 4, tabSize: 4,
-  theme: matchMedia("(prefers-color-scheme: dark)").matches ? "material-darker" : "default",
+  theme: "default",
   lineWrapping: true, viewportMargin: Infinity,
 });
 cm.on("change", () => { tabs[active].src = cm.getValue(); schedule(); });

@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Guide - scikit-verify explorer</title>
+<style>
+  :root {
+    --bg:#ffffff; --surface:#f7f7f5; --border:#e0e0dc;
+    --text:#1a1a18; --muted:#6b6b66; --accent:#185fa5; --danger:#a32d2d; --ok:#0f6e56;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:#ffffff; color:var(--text);
+         font:15px/1.65 ui-sans-serif,system-ui,-apple-system,sans-serif; }
+  header { display:flex; align-items:center; gap:12px; padding:10px 16px;
+           border-bottom:1px solid var(--border); }
+  header h1 { font-size:15px; font-weight:500; margin:0; }
+  header .right { margin-left:auto; }
+  header a { font-size:12.5px; color:var(--accent); text-decoration:none; padding:4px 8px; }
+  header a:hover { text-decoration:underline; }
+  .wrap { max-width:760px; margin:0 auto; padding:28px 20px 60px; }
+  h2 { font-size:17px; font-weight:500; margin:32px 0 8px; }
+  h2:first-of-type { margin-top:0; }
+  h3 { font-size:14.5px; font-weight:500; margin:20px 0 4px; }
+  p { margin:8px 0; }
+  code { font-family:var(--mono); font-size:13px; background:var(--surface);
+         padding:1px 5px; border-radius:4px; }
+  pre { background:var(--surface); border:1px solid var(--border); border-radius:8px;
+        padding:12px 14px; overflow-x:auto; font-family:var(--mono); font-size:12.5px;
+        line-height:1.6; margin:10px 0; }
+  table { border-collapse:collapse; width:100%; margin:12px 0; font-size:14px; }
+  th, td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--border);
+           vertical-align:top; }
+  th { font-weight:500; color:var(--muted); font-size:12.5px; }
+  td code { background:none; padding:0; }
+  .lead { color:var(--muted); }
+  .callout { border-left:3px solid var(--accent); background:var(--surface);
+             padding:10px 14px; margin:14px 0; border-radius:0 6px 6px 0; }
+  a { color:var(--accent); }
+  footer { margin-top:40px; padding-top:16px; border-top:1px solid var(--border);
+           color:var(--muted); font-size:13px; }
+</style>
+</head>
+<body>
+<header>
+  <span aria-hidden="true" style="display:flex;align-items:center;">
+    <svg viewBox="0 0 24 24" width="22" height="22">
+      <rect x="1"  y="1"  width="6" height="6" rx="1" fill="#4dabcf"/>
+      <rect x="9"  y="1"  width="6" height="6" rx="1" fill="#4d77cf"/>
+      <rect x="17" y="1"  width="6" height="6" rx="1" fill="#4dabcf"/>
+      <rect x="1"  y="9"  width="6" height="6" rx="1" fill="#4d77cf"/>
+      <rect x="9"  y="9"  width="6" height="6" rx="1" fill="#4dabcf"/>
+      <rect x="17" y="9"  width="6" height="6" rx="1" fill="#4d77cf"/>
+      <rect x="1"  y="17" width="6" height="6" rx="1" fill="#4dabcf"/>
+      <rect x="9"  y="17" width="6" height="6" rx="1" fill="#4d77cf"/>
+      <rect x="17" y="17" width="6" height="6" rx="1" fill="#4dabcf"/>
+    </svg>
+  </span>
+  <h1>Guide</h1>
+  <div class="right">
+    <a href="index.html">open the explorer</a>
+  </div>
+</header>
+
+<div class="wrap">
+
+<p class="lead">The explorer runs your NumPy function once and shows you the
+mathematics it computes. This page explains what you are looking at.</p>
+
+<h2>Writing a program</h2>
+
+<p>Type a function on the left. The rightmost pane updates as you type. The last
+function you define is the one that gets traced, so helpers above it are fine.</p>
+
+<pre>def weighted_rms(x, w):
+    return np.sqrt(np.sum(w * x**2) / np.sum(w))</pre>
+
+<p><code>np</code>, <code>numpy</code> and <code>sympy</code> are already
+imported. Each parameter is filled with a sample array of length 5, so a
+function of two parameters gets two arrays. You do not pass inputs yourself.</p>
+
+<div class="callout">
+Your code is never uploaded. Python, NumPy, SymPy and scikit-verify are
+downloaded into your browser and everything runs there.
+</div>
+
+<h2>Reading the output</h2>
+
+<p>The four tabs on the right are four views of the same trace.</p>
+
+<table>
+  <tr><th>tab</th><th>what it shows</th></tr>
+  <tr>
+    <td><code>math</code></td>
+    <td>The formula, typeset. Below it, the conditions the formula depends on
+        and any compiled call that was sealed rather than traced.</td>
+  </tr>
+  <tr>
+    <td><code>steps</code></td>
+    <td>The derivation, one operation per line, with back references between
+        steps. This is the closest thing to reading the lowered form of your
+        program.</td>
+  </tr>
+  <tr>
+    <td><code>cse</code></td>
+    <td>The same derivation with shared subexpressions pulled out into
+        <code>t0</code>, <code>t1</code> and so on.</td>
+  </tr>
+  <tr>
+    <td><code>value</code></td>
+    <td>The concrete number the code returned on the sample inputs, the traced
+        shape, and the formula as plain SymPy you can paste elsewhere.</td>
+  </tr>
+</table>
+
+<h3>Steps, in detail</h3>
+
+<p>For the weighted rms above, the <code>steps</code> tab reads:</p>
+
+<pre>step 0: w[i]
+step 1: x[i]
+step 2: x[i]**2
+step 3: step[2]*w[i]
+step 5: Sum(w[j]*x[j]**2, (j, 0, 4))
+step 6: w[i]
+step 7: Sum(w[j], (j, 0, 4))
+step 8: step[5]/step[7]
+step 9: sqrt(step[8])
+result: sqrt(step[8])</pre>
+
+<p>Each line is one operation the tracer saw. Numbers can be skipped where a
+step was folded into another.</p>
+
+<h2>Conditions on the result</h2>
+
+<p>When your code branches on the data, the branch it took becomes part of the
+answer instead of disappearing. Try the <code>median</code> example. The formula
+comes back as a single entry of the array, followed by the comparisons that had
+to hold for that entry to be the median.</p>
+
+<p>This is the point of the tool. A formula without its assumptions is not a
+complete answer, so the assumptions are reported with it.</p>
+
+<h2>Refusals</h2>
+
+<p>Some operations have no exact symbolic form. Rather than return something
+approximate, scikit-verify refuses and says why. Try the <code>refusal</code>
+example, which casts to <code>int</code> partway through:</p>
+
+<pre>astype to non-float would change the math</pre>
+
+<p>A refusal is a designed outcome, not a crash. The rule is to return an exact
+expression or to refuse, because a plausible but wrong formula is the failure
+this project exists to prevent.</p>
+
+<h2>Sealed calls</h2>
+
+<p>Compiled routines such as LAPACK solvers cannot be traced through. They
+become named symbols, checked against their defining equation on the concrete
+arguments. A solve is checked against <code>Ax = b</code>, a singular value
+decomposition against <code>U diag(s) V^T = A</code>. When this happens the
+<code>math</code> tab lists the sealed call, so you can see exactly where the
+symbolic reasoning stopped.</p>
+
+<h2>Sharing</h2>
+
+<p>The <b>copy link</b> button puts your program in the URL. Opening that link
+loads your code into a new tab named <code>shared</code>. Nothing is stored on
+a server, the code travels inside the link itself.</p>
+
+<h2>What this page does not do</h2>
+
+<p>The explorer covers extraction, which is <code>to_sympy</code>. The library
+does more than this page shows.</p>
+
+<ul>
+  <li>Checking a formula you supply, with <code>check_formula</code> and the
+      <code>@specifies</code> decorator, is not available here.</li>
+  <li>Branch exploration with <code>explore()</code> needs the Z3 solver, which
+      is not loaded in the browser.</li>
+  <li>Arrays are traced at length 5. A result proven at one length is not
+      thereby proven at another.</li>
+  <li>Checking is over exact arithmetic. A confirmed formula can still lose
+      accuracy in floating point.</li>
+</ul>
+
+<p>For those, install the library:</p>
+
+<pre>pip install scikit-verify</pre>
+
+<footer>
+  <a href="index.html">Open the explorer</a> &middot;
+  <a href="https://github.com/aadya940/scikit-verify">Repository</a> &middot;
+  <a href="https://scikit-verify.readthedocs.io">Documentation</a>
+</footer>
+
+</div>
+</body>
+</html>
