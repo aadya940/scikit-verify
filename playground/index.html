@@ -159,13 +159,34 @@ def skv_render(src):
         return json.dumps({"state": "refused", "msg": str(e), "name": fn.__name__})
     except Exception as e:
         return json.dumps({"state": "error", "msg": f"{type(e).__name__}: {e}"})
-    # Functions like np.linalg.eig and np.modf return several traced values.
-    parts = list(out) if isinstance(out, tuple) else [out]
+    # Functions like np.linalg.eig and np.modf return several traced values,
+    # and user code returns lists, dicts and plain objects too.
+    def _flatten(o):
+        if isinstance(o, (tuple, list)):
+            r = []
+            for x in o:
+                r.extend(_flatten(x))
+            return r
+        if isinstance(o, dict):
+            r = []
+            for x in o.values():
+                r.extend(_flatten(x))
+            return r
+        return [o]
+    parts = _flatten(out)
+    if not parts or all(p is None for p in parts):
+        return json.dumps({"state": "error",
+                           "msg": "the function returned nothing to trace"})
     d = {"state": "ok", "name": fn.__name__, "parts": [], "conds": [],
          "sealed": [], "ir": "", "cse": "", "value": "", "shape": ""}
     seen_c, seen_s, irs, cses, vals, shapes = set(), set(), [], [], [], []
     for k, p in enumerate(parts):
         label = f"out[{k}]" if len(parts) > 1 else ""
+        if not hasattr(p, "formula"):
+            # a plain python value came back untraced
+            d["parts"].append({"label": label, "plain": repr(p)[:200]})
+            vals.append(repr(p)[:200]); shapes.append("")
+            continue
         try:
             d["parts"].append({"label": label,
                                "latex": sympy.latex(p.formula),
@@ -198,8 +219,8 @@ def skv_render(src):
     d["cse"] = "\\n\\n".join(cses)
     d["value"] = " , ".join(vals) if len(parts) > 1 else (vals[0] if vals else "")
     d["shape"] = " , ".join(shapes) if len(parts) > 1 else (shapes[0] if shapes else "")
-    d["latex"] = d["parts"][0]["latex"]
-    d["sym"] = " , ".join(p["sym"] for p in d["parts"])
+    d["latex"] = d["parts"][0].get("latex", "")
+    d["sym"] = " , ".join(p.get("sym", p.get("plain", "")) for p in d["parts"])
     return json.dumps(d)
 `;
 
@@ -261,6 +282,10 @@ function paint() {
       '<div id="extra"></div></div>';
     parts.forEach((p, i) => {
       const el = document.getElementById("bm" + i);
+      if (p.plain !== undefined) {
+        el.innerHTML = '<code style="font-family:var(--mono);font-size:13px;color:var(--muted);">not traced: ' + esc(p.plain) + '</code>';
+        return;
+      }
       try { katex.render(p.latex, el, { displayMode: true, throwOnError: false }); }
       catch (e) { el.textContent = p.sym; }
     });
