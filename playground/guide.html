@@ -103,11 +103,30 @@ traced, so helper functions above it are fine. <code>np</code>,
 <pre>def weighted_rms(x, w):
     return np.sqrt(np.sum(w * x**2) / np.sum(w))</pre>
 
-<p>You do not supply inputs. Each parameter is filled with a float array of
-length 5, and the symbols in the output are named after your parameters, so
-<code>x</code> above becomes the indexed symbol <code>x[j]</code>. Loops,
-helper variables, in-place updates and method-call style
-(<code>x.mean()</code>) all trace the same as their functional equivalents.</p>
+<p>By default you do not supply inputs. Each parameter is filled with a float
+array of length 5, and the symbols in the output are named after your
+parameters, so <code>x</code> above becomes the indexed symbol
+<code>x[j]</code>. Loops, helper variables, in-place updates and method-call
+style (<code>x.mean()</code>) all trace the same as their functional
+equivalents.</p>
+
+<h3>Choosing your own inputs</h3>
+
+<p>When the function needs something other than 1-D arrays, a matrix, a
+particular shape, or a scalar parameter, define <code>ARGS</code> at the top
+of the buffer and it is passed to the function verbatim:</p>
+
+<pre>ARGS = (np.array([[2.0, 1.0],
+                  [1.0, 3.0]]),
+        np.array([1.0, 2.0]))
+
+def solve_sum(A, b):
+    return np.linalg.solve(A, b).sum()</pre>
+
+<p>Arrays in <code>ARGS</code> are traced at exactly the shape you give them,
+and plain scalars stay symbolic, so <code>ARGS = (x_sample, 2.0)</code> for
+<code>f(x, p)</code> produces a formula with <code>p</code> as a free symbol.
+The <code>solve</code> example tab shows this in use.</p>
 
 <div class="callout">
 Nothing is uploaded. CPython, NumPy, SymPy and scikit-verify run in your

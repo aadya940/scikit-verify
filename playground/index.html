@@ -105,6 +105,7 @@ const EXAMPLES = [
   ["median", "def middle(a):\n    return np.median(a)\n"],
   ["softmax", "def softmax(v):\n    e = np.exp(v - v.max())\n    return e / e.sum()\n"],
   ["refusal", "def rounded(a):\n    return a.astype(int).mean()\n"],
+  ["solve", "ARGS = (np.array([[2.0, 1.0],\n                  [1.0, 3.0]]),\n        np.array([1.0, 2.0]))\n\ndef solve_sum(A, b):\n    return np.linalg.solve(A, b).sum()\n"],
   ["scratch", "def f(x):\n    return x @ x\n"],
 ];
 const OUT_TABS = ["math", "steps", "cse", "value"];
@@ -152,8 +153,15 @@ def skv_render(src):
     if not fns:
         return json.dumps({"state": "empty"})
     fn = fns[-1]
-    npar = len(inspect.signature(fn).parameters)
-    args = [_SAMPLES[i % len(_SAMPLES)].copy() for i in range(npar)]
+    if "ARGS" in ns:
+        # the buffer chose its own inputs
+        given = ns["ARGS"]
+        if not isinstance(given, (tuple, list)):
+            given = (given,)
+        args = [np.copy(a) if isinstance(a, np.ndarray) else a for a in given]
+    else:
+        npar = len(inspect.signature(fn).parameters)
+        args = [_SAMPLES[i % len(_SAMPLES)].copy() for i in range(npar)]
     try:
         out = to_sympy(fn, *args)
     except NotImplementedError as e:
