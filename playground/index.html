@@ -100,7 +100,7 @@
 
 <script>
 const EXAMPLES = [
-  ["weighted rms", "# inputs default to length-5 arrays\n# choose your own with ARGS = (np.eye(3), ...)\n\ndef weighted_rms(x, w):\n    return np.sqrt(np.sum(w * x**2) / np.sum(w))\n"],
+  ["piecewise", "# inputs default to length-5 arrays\n# choose your own with ARGS = (np.eye(3), ...)\n\ndef rectified(x):\n    return np.piecewise(x, [x < 0],\n                        [lambda t: -t, lambda t: t**2])\n"],
   ["variance", "def sample_var(x):\n    m = x.mean()\n    return np.sum((x - m)**2) / (len(x) - 1)\n"],
   ["median", "def middle(a):\n    return np.median(a)\n"],
   ["softmax", "def softmax(v):\n    e = np.exp(v - v.max())\n    return e / e.sum()\n"],
