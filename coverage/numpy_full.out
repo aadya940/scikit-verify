@@ -1,10 +1,9 @@
-TOTAL 67 | LIFT+match 64 | lift-unverified 0 | refused 3 | died 0
+TOTAL 67 | LIFT+match 65 | lift-unverified 0 | refused 2 | died 0
 
-LIFT+match: cumsum, cumprod, diff, diff_2nd, ediff1d, gradient, trapezoid, percentile_50, percentile_25, quantile, sort_sum_head, partition_kth, ptp, argmax_gather, clip, bincount_weighted, digitize_gather, cov_pair, corrcoef_pair, average_weighted, std_ddof1, median, outer_sum, kron_sum, dot, vdot, inner, matmul_sum, tensordot, einsum_ij_ji, einsum_diag_sum, einsum_matvec, cross, convolve_valid, correlate_valid, unwrap, polyval, polyfit_deg1, heaviside, sign_gate, where_sum, select, nansum, nanmean, nanstd, nanmax, nanmedian, stack_mean, concat_sum, tile_sum, repeat_sum, roll_dot, flip_diff, transpose_trace, ravel_outer, split_sum, meshgrid_sum, maximum_reduce, fmax_sum, abs_diff_norm, linalg_norm2, linalg_norm1, allclose_gate, real_if_close
+LIFT+match: cumsum, cumprod, diff, diff_2nd, ediff1d, gradient, trapezoid, percentile_50, percentile_25, quantile, sort_sum_head, partition_kth, ptp, argmax_gather, clip, bincount_weighted, digitize_gather, cov_pair, corrcoef_pair, average_weighted, std_ddof1, median, outer_sum, kron_sum, dot, vdot, inner, matmul_sum, tensordot, einsum_ij_ji, einsum_diag_sum, einsum_matvec, cross, convolve_valid, correlate_valid, unwrap, polyval, polyfit_deg1, piecewise, heaviside, sign_gate, where_sum, select, nansum, nanmean, nanstd, nanmax, nanmedian, stack_mean, concat_sum, tile_sum, repeat_sum, roll_dot, flip_diff, transpose_trace, ravel_outer, split_sum, meshgrid_sum, maximum_reduce, fmax_sum, abs_diff_norm, linalg_norm2, linalg_norm1, allclose_gate, real_if_close
 
 REFUSED:
   searchsorted_interp      np.interp with a traced table: the interval selectio
-  histogram_counts         raw non-uniform ndarray operand, wrap it: Pair.array
-  piecewise                coercion to dtype=bool would discard the formula
+  histogram_counts         linspace: retstep/kwargs not supported
 
 DIED:

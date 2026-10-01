@@ -1791,6 +1791,46 @@ def _select(condlist, choicelist, default=0):
     return out
 
 
+def _piecewise(x, condlist, funclist, *args, **kw):
+    """np.piecewise is np.select with the opposite precedence and
+    callable pieces. numpy assigns pieces in list order, so where
+    conditions overlap the LAST true condition wins; sympy's Piecewise
+    takes the first true clause, so the chain is built forward with
+    each later piece wrapping the earlier ones. Callables are traced
+    by applying them to the traced input, and the optional extra
+    funclist entry is the otherwise clause (numpy defaults to 0)."""
+    if not isinstance(condlist, (list, tuple)):
+        condlist = [condlist]
+    condlist = list(condlist)
+    funclist = list(funclist)
+    n = len(condlist)
+    if len(funclist) == n + 1:
+        default = funclist[-1]
+        funclist = funclist[:-1]
+    elif len(funclist) == n:
+        default = 0.0
+    else:
+        raise ValueError(
+            f"with {n} condition(s), either {n} or {n + 1} functions "
+            f"are expected, got {len(funclist)}"
+        )
+    for c in condlist:
+        if not isinstance(c, Pair):
+            raise NotImplementedError(
+                "np.piecewise with a concrete boolean mask: there is no "
+                "symbolic condition to recover; build the mask from the "
+                "traced input"
+            )
+
+    def piece(f):
+        return f(x, *args, **kw) if callable(f) else f
+
+    out = piece(default)
+    for cond, f in zip(condlist, funclist):
+        out = _where(cond, piece(f), out)
+    return out
+
+
 def _interp(x, xp, fp, left=None, right=None, period=None):
     """Piecewise-linear interpolation, exactly.
 
@@ -1850,6 +1890,7 @@ def _interp(x, xp, fp, left=None, right=None, period=None):
 
 
 FUNCTION_TABLE[np.select] = _select
+FUNCTION_TABLE[np.piecewise] = _piecewise
 FUNCTION_TABLE[np.interp] = _interp
 def _trace(a, offset=0, **kwargs):
     if not isinstance(a, Pair) or kwargs or len(a._axis_bounds or ()) != 2:
