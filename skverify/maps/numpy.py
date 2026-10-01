@@ -1218,8 +1218,23 @@ def _median(a, axis=None, **kwargs):
 
 def _quantile_like(np_fn, scale):
     def entry(a, q, axis=None, **kwargs):
+        # the method kwarg changes the mathematics; silently computing
+        # linear for a different method would be a wrong formula
+        method = kwargs.pop("method", "linear")
+        if kwargs:
+            raise NotImplementedError(
+                f"{np_fn.__name__} kwargs {list(kwargs)} not supported"
+            )
+        if method not in ("linear", "lower", "higher", "nearest", "midpoint"):
+            raise NotImplementedError(
+                f"{np_fn.__name__} method={method!r} is not lifted; "
+                "linear, lower, higher, nearest and midpoint are"
+            )
         if not isinstance(a, Pair) or axis is not None or len(a._axis_bounds or ()) != 1:
-            return np_fn(np.asarray(Pair._value_of(a), dtype=float), q, axis=axis)
+            return np_fn(
+                np.asarray(Pair._value_of(a), dtype=float), q,
+                axis=axis, method=method,
+            )
         from ..pair import _GUARDS
 
         vals = np.asarray(a.value, dtype=float)
@@ -1236,16 +1251,25 @@ def _quantile_like(np_fn, scale):
         def one(qv):
             pos = (len(order) - 1) * float(qv) / scale
             lo, hi = int(np.floor(pos)), int(np.ceil(pos))
-            w = pos - lo
             f_lo = a.formula.subs(sym, int(order[lo]))
             f_hi = a.formula.subs(sym, int(order[hi]))
+            if method == "lower":
+                return f_lo
+            if method == "higher":
+                return f_hi
+            if method == "nearest":
+                # numpy rounds the fractional position half to even
+                return f_lo if int(np.round(pos)) == lo else f_hi
+            if method == "midpoint":
+                return (f_lo + f_hi) / 2
+            w = pos - lo
             return (1 - w) * f_lo + w * f_hi
 
         if np.ndim(q) == 0:
-            return Pair(np_fn(vals, q), one(q), None, steps=(a,))
+            return Pair(np_fn(vals, q, method=method), one(q), None, steps=(a,))
         formulas = [one(qv) for qv in np.asarray(q).ravel()]
         out = np.empty(len(formulas), dtype=object)
-        values = np.asarray(np_fn(vals, q), dtype=float)
+        values = np.asarray(np_fn(vals, q, method=method), dtype=float)
         for k, f in enumerate(formulas):
             out[k] = Pair(values[k], f, None, steps=(a,))
         return out
