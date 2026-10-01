@@ -29,6 +29,7 @@
   pre { background:var(--surface); border:1px solid var(--border); border-radius:8px;
         padding:12px 14px; overflow-x:auto; font-family:var(--mono); font-size:12.5px;
         line-height:1.6; margin:10px 0; }
+  pre code { background:none; padding:0; }
   table { border-collapse:collapse; width:100%; margin:12px 0; font-size:14px; }
   th, td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--border);
            vertical-align:top; }
@@ -38,6 +39,8 @@
   .callout { border-left:3px solid var(--accent); background:var(--surface);
              padding:10px 14px; margin:14px 0; border-radius:0 6px 6px 0; }
   a { color:var(--accent); }
+  ul { padding-left:22px; }
+  li { margin:5px 0; }
   footer { margin-top:40px; padding-top:16px; border-top:1px solid var(--border);
            color:var(--muted); font-size:13px; }
 </style>
@@ -59,64 +62,86 @@
   </span>
   <h1>Guide</h1>
   <div class="right">
-    <a href="index.html">open the explorer</a>
+    <a href="https://github.com/aadya940/scikit-verify">scikit-verify</a>
+    <a href="index.html">open numpy explore</a>
   </div>
 </header>
 
 <div class="wrap">
 
-<p class="lead">numpy explore runs your NumPy function once and shows you the
-mathematics it computes. This page explains what you are looking at.</p>
+<p class="lead">numpy explore runs your NumPy function once and reports the
+mathematical expression it computed, together with the conditions under which
+that expression holds. This page explains the mechanism, how to read each
+output view, and exactly what is and is not being claimed.</p>
+
+<h2>How the trace works</h2>
+
+<p>Your function is executed once on traced arrays. Each traced value carries
+two things in lockstep. One is a concrete NumPy array, so your code runs on
+real numbers and takes real branches. The other is a SymPy expression recording
+what has been computed so far. NumPy operations are intercepted through the
+standard dispatch protocols, <code>__array_ufunc__</code> for elementwise
+operations and <code>__array_function__</code> for the rest, so the function
+itself is not modified, rewritten or annotated.</p>
+
+<p>When your code branches on data, the truth test returns the concrete answer
+and the symbolic comparison is appended to the current path. The branch taken
+is therefore part of the result, not something that silently disappeared. This
+is the concolic style of execution, a concrete run and a symbolic run sharing
+one control flow.</p>
+
+<p>The rule throughout is to return an exact expression or to refuse. There is
+no approximation step and no best-effort fallback, because a plausible but
+wrong formula is precisely the failure the tool exists to catch.</p>
 
 <h2>Writing a program</h2>
 
-<p>Type a function on the left. The rightmost pane updates as you type. The last
-function you define is the one that gets traced, so helpers above it are fine.</p>
+<p>Type a function in the editor. The last function you define is the one
+traced, so helper functions above it are fine. <code>np</code>,
+<code>numpy</code> and <code>sympy</code> are in scope already.</p>
 
 <pre>def weighted_rms(x, w):
     return np.sqrt(np.sum(w * x**2) / np.sum(w))</pre>
 
-<p><code>np</code>, <code>numpy</code> and <code>sympy</code> are already
-imported. Each parameter is filled with a sample array of length 5, so a
-function of two parameters gets two arrays. You do not pass inputs yourself.</p>
+<p>You do not supply inputs. Each parameter is filled with a float array of
+length 5, and the symbols in the output are named after your parameters, so
+<code>x</code> above becomes the indexed symbol <code>x[j]</code>. Loops,
+helper variables, in-place updates and method-call style
+(<code>x.mean()</code>) all trace the same as their functional equivalents.</p>
 
 <div class="callout">
-Your code is never uploaded. Python, NumPy, SymPy and scikit-verify are
-downloaded into your browser and everything runs there.
+Nothing is uploaded. CPython, NumPy, SymPy and scikit-verify run in your
+browser through Pyodide, and your code never leaves the page.
 </div>
 
-<h2>Reading the output</h2>
-
-<p>The four tabs on the right are four views of the same trace.</p>
+<h2>The four views</h2>
 
 <table>
   <tr><th>tab</th><th>what it shows</th></tr>
   <tr>
     <td><code>math</code></td>
-    <td>The formula, typeset. Below it, the conditions the formula depends on
-        and any compiled call that was sealed rather than traced.</td>
+    <td>The expression, typeset. Below it, the path conditions it was derived
+        under and any compiled call that was sealed rather than traced.</td>
   </tr>
   <tr>
     <td><code>steps</code></td>
-    <td>The derivation, one operation per line, with back references between
-        steps. This is the closest thing to reading the lowered form of your
-        program.</td>
+    <td>The derivation as a numbered listing, one intercepted operation per
+        line, with back references between steps. This is the lowered form of
+        your program, in the sense a compiler explorer shows assembly.</td>
   </tr>
   <tr>
     <td><code>cse</code></td>
-    <td>The same derivation with shared subexpressions pulled out into
-        <code>t0</code>, <code>t1</code> and so on.</td>
+    <td>The same derivation after common-subexpression elimination, with
+        shared terms bound to <code>t0</code>, <code>t1</code> and so on.</td>
   </tr>
   <tr>
     <td><code>value</code></td>
-    <td>The concrete number the code returned on the sample inputs, the traced
-        shape, and the formula as plain SymPy you can paste elsewhere.</td>
+    <td>The concrete result of the run, the traced shape, and the expression
+        as plain SymPy text you can paste into a session.</td>
   </tr>
 </table>
 
-<h3>Steps, in detail</h3>
-
-<p>For the weighted rms above, the <code>steps</code> tab reads:</p>
+<p>For the weighted rms above, <code>steps</code> reads:</p>
 
 <pre>step 0: w[i]
 step 1: x[i]
@@ -129,68 +154,82 @@ step 8: step[5]/step[7]
 step 9: sqrt(step[8])
 result: sqrt(step[8])</pre>
 
-<p>Each line is one operation the tracer saw. Numbers can be skipped where a
-step was folded into another.</p>
+<p>Each line is one operation the dispatch layer saw, in execution order.
+Step numbers can be skipped where an intermediate was folded into a later
+step.</p>
 
-<h2>Conditions on the result</h2>
+<h2>Path conditions</h2>
 
-<p>When your code branches on the data, the branch it took becomes part of the
-answer instead of disappearing. Try the <code>median</code> example. The formula
-comes back as a single entry of the array, followed by the comparisons that had
-to hold for that entry to be the median.</p>
-
-<p>This is the point of the tool. A formula without its assumptions is not a
-complete answer, so the assumptions are reported with it.</p>
+<p>Run the <code>median</code> example. The result is a single entry of the
+array, and beneath it are the comparisons that had to hold for that entry to
+be the median of the sample that was traced. The expression and its conditions
+are one object. Reporting the formula without the hypotheses it was derived
+under would overstate what the trace established, so the two are never
+separated.</p>
 
 <h2>Refusals</h2>
 
-<p>Some operations have no exact symbolic form. Rather than return something
-approximate, scikit-verify refuses and says why. Try the <code>refusal</code>
-example, which casts to <code>int</code> partway through:</p>
+<p>Some operations have no exact symbolic form. The <code>refusal</code>
+example casts to <code>int</code> midway, and integer truncation of a symbolic
+real has no faithful expression, so the trace stops with one sentence:</p>
 
 <pre>astype to non-float would change the math</pre>
 
-<p>A refusal is a designed outcome, not a crash. The rule is to return an exact
-expression or to refuse, because a plausible but wrong formula is the failure
-this project exists to prevent.</p>
+<p>A refusal is a designed outcome with a stated reason, not an error state.
+If you hit one on code you believe should trace, the reason names the missing
+mechanism.</p>
 
-<h2>Sealed calls</h2>
+<h2>Sealed compiled calls</h2>
 
-<p>Compiled routines such as LAPACK solvers cannot be traced through. They
-become named symbols, checked against their defining equation on the concrete
-arguments. A solve is checked against <code>Ax = b</code>, a singular value
-decomposition against <code>U diag(s) V^T = A</code>. When this happens the
-<code>math</code> tab lists the sealed call, so you can see exactly where the
-symbolic reasoning stopped.</p>
+<p>Routines that bottom out in compiled code, LAPACK factorizations being the
+usual case, cannot be traced through. They become named symbols, and the
+concrete result is checked against the routine's defining equation on the
+actual arguments, in the result-checking tradition of Blum and Kannan. A solve
+is checked against <code>Ax = b</code>, an eigendecomposition against
+<code>A v = w v</code>. Try returning <code>np.linalg.eig(a)</code>. The
+output comes back as <code>eig_w[i]</code> and <code>eig_v[i, j]</code>, and
+the <code>math</code> tab lists <code>eig</code> under sealed calls, so the
+boundary of the symbolic reasoning is explicit rather than hidden.</p>
 
-<h2>Sharing</h2>
+<h2>Scope</h2>
 
-<p>The <b>copy link</b> button puts your program in the URL. Opening that link
-loads your code into a new tab named <code>shared</code>. Nothing is stored on
-a server, the code travels inside the link itself.</p>
-
-<h2>What this page does not do</h2>
-
-<p>The explorer covers extraction, which is <code>to_sympy</code>. The library
-does more than this page shows.</p>
+<p>Be precise about what a result here means.</p>
 
 <ul>
-  <li>Checking a formula you supply, with <code>check_formula</code> and the
-      <code>@specifies</code> decorator, is not available here.</li>
-  <li>Branch exploration with <code>explore()</code> needs the Z3 solver, which
-      is not loaded in the browser.</li>
-  <li>Arrays are traced at length 5. A result proven at one length is not
-      thereby proven at another.</li>
-  <li>Checking is over exact arithmetic. A confirmed formula can still lose
-      accuracy in floating point.</li>
+  <li>Claims are shape-specific. Arrays are traced at length 5, and an
+      expression established at one shape is not thereby established at
+      another.</li>
+  <li>The trace follows one path, the one the concrete sample took. The
+      conditions tell you which path that was. Covering the remaining
+      branches is <code>explore()</code> in the library, which drives the Z3
+      solver and is not loaded in this page.</li>
+  <li>Reasoning is over exact arithmetic. A confirmed expression says what
+      the code computes mathematically, not that it is numerically stable in
+      floating point.</li>
+  <li>Checking an expression you supply, with <code>check_formula</code> and
+      the <code>@specifies</code> decorator, is part of the library rather
+      than this page.</li>
 </ul>
-
-<p>For those, install the library:</p>
 
 <pre>pip install scikit-verify</pre>
 
+<h2>Sharing</h2>
+
+<p>The <b>copy link</b> button encodes your program into the URL fragment.
+Fragments are not sent to any server, so the code travels inside the link and
+nowhere else. Opening a shared link adds a tab named <code>shared</code>.</p>
+
+<h2>Lineage</h2>
+
+<p>The ideas are old and good. Pairing a concrete execution with a symbolic
+one is King's symbolic execution (1976), run in the concolic style of Cadar
+and Sen. Checking a compiled routine's answer against its defining equation
+rather than trusting its name is Blum and Kannan's result checking (1989).
+The details, with the design document and measured coverage boards over
+NumPy, SciPy, scikit-learn and statsmodels, are in the repository.</p>
+
 <footer>
-  <a href="index.html">Open the explorer</a> &middot;
+  <a href="index.html">Open numpy explore</a> &middot;
   <a href="https://github.com/aadya940/scikit-verify">Repository</a> &middot;
   <a href="https://scikit-verify.readthedocs.io">Documentation</a>
 </footer>
