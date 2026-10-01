@@ -234,7 +234,7 @@ def skv_render(src):
 `;
 
 const $ = id => document.getElementById(id);
-let pyodide = null, cm = null, timer = null, running = false, pending = false;
+let pyodide = null, ready = false, cm = null, timer = null, running = false, pending = false;
 let tabs = EXAMPLES.map(e => ({ name: e[0], src: e[1] }));
 let active = 0, outTab = "math", last = null;
 
@@ -327,7 +327,7 @@ function paint() {
 }
 
 async function run() {
-  if (!pyodide) return;
+  if (!ready) return;
   if (running) { pending = true; return; }
   running = true; setStatus("tracing", "busy");
   try {
@@ -402,6 +402,7 @@ drawSrcTabs(); drawOutTabs(); paint();
       "import micropip\n" +
       "await micropip.install('scikit-verify', deps=False)\n");
     await pyodide.runPythonAsync(DRIVER);
+    ready = true;
     await run();
   } catch (e) {
     console.error(e);
