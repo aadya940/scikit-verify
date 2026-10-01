@@ -100,13 +100,13 @@
 
 <script>
 const EXAMPLES = [
-  ["weighted rms", "def weighted_rms(x, w):\n    return np.sqrt(np.sum(w * x**2) / np.sum(w))\n"],
+  ["weighted rms", "# inputs default to length-5 arrays\n# choose your own with ARGS = (np.eye(3), ...)\n\ndef weighted_rms(x, w):\n    return np.sqrt(np.sum(w * x**2) / np.sum(w))\n"],
   ["variance", "def sample_var(x):\n    m = x.mean()\n    return np.sum((x - m)**2) / (len(x) - 1)\n"],
   ["median", "def middle(a):\n    return np.median(a)\n"],
   ["softmax", "def softmax(v):\n    e = np.exp(v - v.max())\n    return e / e.sum()\n"],
   ["refusal", "def rounded(a):\n    return a.astype(int).mean()\n"],
   ["solve", "ARGS = (np.array([[2.0, 1.0],\n                  [1.0, 3.0]]),\n        np.array([1.0, 2.0]))\n\ndef solve_sum(A, b):\n    return np.linalg.solve(A, b).sum()\n"],
-  ["scratch", "def f(x):\n    return x @ x\n"],
+  ["scratch", "# ARGS = (np.eye(3),)\n\ndef f(x):\n    return x @ x\n"],
 ];
 const OUT_TABS = ["math", "steps", "cse", "value"];
 
