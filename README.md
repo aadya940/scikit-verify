@@ -13,6 +13,7 @@
 
 ![CI](https://github.com/aadya940/scikit-verify/actions/workflows/ci.yml/badge.svg)
 
+* [numpy explore](https://aadya940.github.io/scikit-verify/playground/) - type a NumPy program in your browser, see its mathematics
 * [Source code](https://github.com/aadya940/scikit-verify)
 * [Design](DESIGN.md) - how each subsystem works, one example at a time
 * [Coverage](doc/coverage.md)
@@ -39,6 +40,12 @@ out = to_sympy(weighted_rms, np.array([1.0, 2.0, 3.0]), np.array([0.5, 0.3, 0.2]
 out.formula
 # sqrt(Sum(w[j]*x[j]**2, (j, 0, 2))/Sum(w[j], (j, 0, 2)))
 ```
+
+You can try this without installing anything.
+[numpy explore](https://aadya940.github.io/scikit-verify/playground/)
+runs the tracer in your browser:
+
+[![numpy explore, typing a NumPy program and watching its mathematics appear](doc/numpy-explore.gif)](https://aadya940.github.io/scikit-verify/playground/)
 
 Every formula comes as a certificate. The certificate is the
 expression, plus the assumptions it was derived under. When code
