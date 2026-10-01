@@ -156,6 +156,10 @@ def skv_render(src):
     if "ARGS" in ns:
         # the buffer chose its own inputs
         given = ns["ARGS"]
+        if isinstance(given, (dict, set)):
+            return json.dumps({"state": "error",
+                "msg": "ARGS must be a tuple of positional inputs, "
+                       "like ARGS = (np.eye(3),)"})
         if not isinstance(given, (tuple, list)):
             given = (given,)
         args = [np.copy(a) if isinstance(a, np.ndarray) else a for a in given]
